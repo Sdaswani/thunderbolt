@@ -17,6 +17,7 @@ import { getDb } from '@/db/database'
 import { isSsoMode } from '@/lib/auth-mode'
 import { getAuthToken } from '@/lib/auth-token'
 import { fetch as baseFetch } from '@/lib/fetch'
+import { sanitizeRequestBody } from '@/lib/sanitize-request-body'
 import { createToolset, getAvailableTools } from '@/lib/tools'
 import type { Model, SaveMessagesFunction, ThunderboltUIMessage } from '@/types'
 import type { SourceMetadata } from '@/types/source'
@@ -95,17 +96,26 @@ export const createModel = async (modelConfig: Model) => {
       }
       ssoFetch.preconnect = fetch.preconnect
       const providerFetch: typeof fetch = sso && !hasRealToken ? ssoFetch : fetch
+      // Strip shell-injection patterns from outgoing POST bodies so Cloudflare's
+      // Command Injection WAF rule doesn't 403 legitimate research-mode payloads (THU-445).
+      const sanitizingFetch: typeof fetch = (input, init) => {
+        if (init?.method === 'POST' && typeof init.body === 'string') {
+          return providerFetch(input, { ...init, body: sanitizeRequestBody(init.body) })
+        }
+        return providerFetch(input, init)
+      }
+      sanitizingFetch.preconnect = providerFetch.preconnect
       // GPT OSS (vendor: 'openai') uses createOpenAI with .chat() to force Chat Completions API
       // (AI SDK 5 defaults createOpenAI to Responses API which our backend doesn't support)
       if (modelConfig.vendor === 'openai') {
-        const provider = createOpenAI({ baseURL: cloudUrl, apiKey: token, fetch: providerFetch })
+        const provider = createOpenAI({ baseURL: cloudUrl, apiKey: token, fetch: sanitizingFetch })
         return provider.chat(modelConfig.model)
       }
       const provider = createOpenAICompatible({
         name: 'thunderbolt',
         baseURL: cloudUrl,
         apiKey: token,
-        fetch: providerFetch,
+        fetch: sanitizingFetch,
       })
       return provider(modelConfig.model)
     }
