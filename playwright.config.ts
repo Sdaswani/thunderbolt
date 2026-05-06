@@ -49,6 +49,16 @@ export default defineConfig({
         baseURL: `http://localhost:${samlVitePort}`,
       },
     },
+    // Proxy specs share the OIDC dev server (they need a real auth flow to load
+    // the authenticated app shell, but mock /v1/proxy via page.route()).
+    {
+      name: 'proxy',
+      testMatch: /proxy-/,
+      use: {
+        ...devices['Desktop Chrome'],
+        baseURL: `http://localhost:${oidcVitePort}`,
+      },
+    },
   ],
   webServer: [
     // --- OIDC frontend ---
@@ -64,7 +74,10 @@ export default defineConfig({
     },
     // --- OIDC backend ---
     {
-      command: 'cd backend && bun run dev',
+      // Bypass `bun run dev` (which goes through scripts/dev.sh and triggers
+      // a slow `op run` when local devs have OP_ENVIRONMENT_ID in their .env).
+      // The env block below provides every var the backend needs for tests.
+      command: 'cd backend && bun run --watch src/index.ts',
       url: `http://localhost:${oidcBackendPort}/v1/health`,
       reuseExistingServer: !isCI,
       timeout: 30_000,
@@ -97,7 +110,10 @@ export default defineConfig({
     },
     // --- SAML backend ---
     {
-      command: 'cd backend && bun run dev',
+      // Bypass `bun run dev` (which goes through scripts/dev.sh and triggers
+      // a slow `op run` when local devs have OP_ENVIRONMENT_ID in their .env).
+      // The env block below provides every var the backend needs for tests.
+      command: 'cd backend && bun run --watch src/index.ts',
       url: `http://localhost:${samlBackendPort}/v1/health`,
       reuseExistingServer: !isCI,
       timeout: 30_000,
