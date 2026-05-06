@@ -20,6 +20,8 @@ const fetchTimeoutMs = 10_000
 const userAgent =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 
+const emptyPreview: PreviewDto = { previewImageUrl: null, summary: null, title: null, siteName: null }
+
 const decodeHtmlEntities = (text: string): string =>
   text
     .replace(/&#x([0-9A-Fa-f]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
@@ -112,31 +114,16 @@ export const createPreviewRoutes = (auth: Auth, fetchFn: typeof fetch = globalTh
               signal: controller.signal,
             })
 
-            if (!response.ok) {
-              set.status = 502
-              return { error: `Upstream returned ${response.status}` }
-            }
-
+            if (!response.ok) return emptyPreview
             const contentLength = response.headers.get('content-length')
             const parsed = contentLength ? parseInt(contentLength, 10) : null
-            if (parsed !== null && Number.isFinite(parsed) && parsed > maxHtmlBytes) {
-              set.status = 413
-              return { error: 'Page too large' }
-            }
+            if (parsed !== null && Number.isFinite(parsed) && parsed > maxHtmlBytes) return emptyPreview
             const buffer = await response.arrayBuffer()
-            if (buffer.byteLength > maxHtmlBytes) {
-              set.status = 413
-              return { error: 'Page too large' }
-            }
+            if (buffer.byteLength > maxHtmlBytes) return emptyPreview
             const html = new TextDecoder().decode(buffer)
             return extractMetadata(html, targetUrl)
-          } catch (err) {
-            if (err instanceof Error && err.name === 'AbortError') {
-              set.status = 408
-              return { error: 'Upstream timed out' }
-            }
-            set.status = 502
-            return { error: 'Preview fetch failed' }
+          } catch {
+            return emptyPreview
           } finally {
             clearTimeout(timeoutId)
           }
