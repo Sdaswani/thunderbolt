@@ -23,7 +23,7 @@ import { isTauri } from './platform'
 /** Headers the browser injects automatically and that should never be promoted
  *  to passthrough headers (forwarding them would leak browser context to upstreams
  *  or duplicate the proxy's own framing headers). */
-const SKIP_HEADERS = new Set([
+const skipHeaders = new Set([
   'host',
   'origin',
   'referer',
@@ -42,7 +42,7 @@ const SKIP_HEADERS = new Set([
   'upgrade-insecure-requests',
 ])
 
-const PASSTHROUGH_PREFIX = 'x-proxy-passthrough-'
+const passthroughPrefix = 'x-proxy-passthrough-'
 
 const buildHostedRequest = (cloudUrl: string, input: RequestInfo | URL, init?: RequestInit): Request => {
   const sourceUrl = input instanceof Request ? input.url : input.toString()
@@ -53,8 +53,12 @@ const buildHostedRequest = (cloudUrl: string, input: RequestInfo | URL, init?: R
 
   sourceHeaders.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (SKIP_HEADERS.has(lower)) return
-    if (lower.startsWith('x-proxy-')) return
+    if (skipHeaders.has(lower)) {
+      return
+    }
+    if (lower.startsWith('x-proxy-')) {
+      return
+    }
     proxyHeaders.set(`X-Proxy-Passthrough-${key}`, value)
   })
 
@@ -81,17 +85,23 @@ const unwrapHostedResponse = (response: Response): Response => {
   // First pass: collect passthrough headers (the upstream's real values).
   response.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (lower.startsWith(PASSTHROUGH_PREFIX)) {
-      out.set(lower.slice(PASSTHROUGH_PREFIX.length), value)
+    if (lower.startsWith(passthroughPrefix)) {
+      out.set(lower.slice(passthroughPrefix.length), value)
     }
   })
   // Second pass: include any unprefixed header that the upstream didn't already
   // send (passthrough wins). Skip proxy-only framing headers.
   response.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (lower.startsWith(PASSTHROUGH_PREFIX)) return
-    if (lower === 'content-security-policy' || lower === 'content-disposition') return
-    if (out.has(lower)) return
+    if (lower.startsWith(passthroughPrefix)) {
+      return
+    }
+    if (lower === 'content-security-policy' || lower === 'content-disposition') {
+      return
+    }
+    if (out.has(lower)) {
+      return
+    }
     out.set(lower, value)
   })
   return new Response(response.body, {
@@ -130,7 +140,9 @@ export const createProxyFetch = (options: ProxyFetchOptions): typeof fetch =>
     const proxyRequest = buildHostedRequest(options.cloudUrl, input as RequestInfo | URL, init)
     if (options.getProxyAuthToken && !proxyRequest.headers.has('Authorization')) {
       const token = options.getProxyAuthToken()
-      if (token) proxyRequest.headers.set('Authorization', `Bearer ${token}`)
+      if (token) {
+        proxyRequest.headers.set('Authorization', `Bearer ${token}`)
+      }
     }
     const f = options.fetchImpl ?? globalThis.fetch
     const proxyResponse = await f(proxyRequest)
