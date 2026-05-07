@@ -152,6 +152,29 @@ export const createServices = (args: ServiceArgs) => {
   })
 
   // --- Postgres ---
+  // Created before the task definition so the container can pull POSTGRES_PASSWORD
+  // and POWERSYNC_DB_PASSWORD from Secrets Manager at task start (vs. embedding them
+  // cleartext in the task def, where anyone with `ecs:DescribeTaskDefinition` could
+  // read them).
+  const postgresPasswordSecret = new aws.secretsmanager.Secret(`${name}-postgres-password`, {
+    tags: { Name: `${name}-postgres-password` },
+  })
+  new aws.secretsmanager.SecretVersion(`${name}-postgres-password-secret-version`, {
+    secretId: postgresPasswordSecret.id,
+    secretString: args.secrets.postgresPassword,
+  })
+
+  // POWERSYNC_DB_PASSWORD is read by the postgres init script (01-powersync.sh) on
+  // first boot to set the powersync_role login password. The PowerSync container also
+  // uses this password in its PS_PG_URI to authenticate replication.
+  const powersyncDbPasswordSecret = new aws.secretsmanager.Secret(`${name}-powersync-db-password`, {
+    tags: { Name: `${name}-powersync-db-password` },
+  })
+  new aws.secretsmanager.SecretVersion(`${name}-powersync-db-password-secret-version`, {
+    secretId: powersyncDbPasswordSecret.id,
+    secretString: args.secrets.powersyncDbPassword,
+  })
+
   const pgTaskDef = new aws.ecs.TaskDefinition(`${name}-pg-task`, {
     family: `${name}-postgres`,
     requiresCompatibilities: ['FARGATE'],
@@ -183,8 +206,11 @@ export const createServices = (args: ServiceArgs) => {
         environment: [
           { name: 'POSTGRES_USER', value: 'postgres' },
           { name: 'POSTGRES_DB', value: 'postgres' },
-          { name: 'POSTGRES_PASSWORD', value: args.secrets.postgresPassword },
           { name: 'PGDATA', value: '/var/lib/postgresql/data/pgdata' },
+        ],
+        secrets: [
+          { name: 'POSTGRES_PASSWORD', valueFrom: postgresPasswordSecret.arn },
+          { name: 'POWERSYNC_DB_PASSWORD', valueFrom: powersyncDbPasswordSecret.arn },
         ],
         portMappings: [{ containerPort: 5432 }],
         mountPoints: [{ sourceVolume: 'pg-data', containerPath: '/var/lib/postgresql/data' }],
@@ -228,6 +254,11 @@ export const createServices = (args: ServiceArgs) => {
         environment: [
           { name: 'PS_PG_URI', value: pulumi.interpolate`postgresql://powersync_role:${args.secrets.powersyncDbPassword}@postgres.thunderbolt.local:5432/postgres` },
           { name: 'PS_STORAGE_URI', value: pulumi.interpolate`postgresql://postgres:${args.secrets.postgresPassword}@postgres.thunderbolt.local:5432/powersync_storage` },
+          // Base64 of POWERSYNC_JWT_SECRET. Read by powersync-config.yaml's
+          // `client_auth.jwks.keys[].k: !env POWERSYNC_JWT_KEY_BASE64` to verify
+          // the JWT signatures the backend issues. Must match the secret the backend
+          // signs with — both come from the same `args.secrets.powersyncJwtSecret`.
+          { name: 'POWERSYNC_JWT_KEY_BASE64', value: args.secrets.powersyncJwtSecret.apply((s) => Buffer.from(s).toString('base64')) },
         ],
         portMappings: [{ containerPort: 8080 }],
         logConfiguration: logConfig('powersync'),
@@ -280,7 +311,11 @@ export const createServices = (args: ServiceArgs) => {
           // Realm import substitutes ${OIDC_REDIRECT_URI} / ${OIDC_WEB_ORIGIN} so the
           // baked-in realm JSON works for both local dev (defaults) and Fargate (real URLs).
           // Redirect URI = backend OAuth callback (BETTER_AUTH_URL = publicUrls.api).
-          { name: 'OIDC_REDIRECT_URI', value: pulumi.interpolate`${args.publicUrls.api}/v1/api/auth/oauth2/callback/oidc` },
+          // Callback path is the @better-auth/sso plugin's standard
+          // `/sso/callback/<providerId>` (post-THU-461 SSO migration). The
+          // legacy genericOAuth path was `/oauth2/callback/oidc`; both are
+          // documented here in case anything still references it.
+          { name: 'OIDC_REDIRECT_URI', value: pulumi.interpolate`${args.publicUrls.api}/v1/api/auth/sso/callback/sso` },
           { name: 'OIDC_WEB_ORIGIN', value: args.publicUrls.app },
         ],
         portMappings: [{ containerPort: 8080 }],
@@ -322,6 +357,11 @@ export const createServices = (args: ServiceArgs) => {
     databaseUrl: new aws.secretsmanager.Secret(`${name}-database-url`, {
       tags: { Name: `${name}-database-url` },
     }),
+    // postgresPassword and powersyncDbPassword secrets are created earlier (above the
+    // postgres task) so the task definition can reference their ARNs. We re-export
+    // them here so the policy block below grants read access to the shared exec role.
+    postgresPassword: postgresPasswordSecret,
+    powersyncDbPassword: powersyncDbPasswordSecret,
     // AI provider keys. Created unconditionally; empty values are accepted by
     // backend zod schema (`.default('')`). Enterprise deploys pass empty strings;
     // preview deploys get real values via `pulumi config set --secret` in CI.
@@ -391,6 +431,8 @@ export const createServices = (args: ServiceArgs) => {
           backendSecrets.betterAuthSecret.arn,
           backendSecrets.powersyncJwtSecret.arn,
           backendSecrets.databaseUrl.arn,
+          backendSecrets.postgresPassword.arn,
+          backendSecrets.powersyncDbPassword.arn,
           backendSecrets.anthropicApiKey.arn,
           backendSecrets.fireworksApiKey.arn,
           backendSecrets.mistralApiKey.arn,
@@ -428,7 +470,11 @@ export const createServices = (args: ServiceArgs) => {
           // frontend's nginx proxy (which requires different DNS config).
           { name: 'BETTER_AUTH_URL', value: args.publicUrls.api },
           { name: 'APP_URL', value: args.publicUrls.app },
-          { name: 'TRUSTED_ORIGINS', value: pulumi.interpolate`${args.publicUrls.app},${args.publicUrls.marketing}` },
+          // The auth subdomain must be in TRUSTED_ORIGINS — Better Auth's SSO plugin
+          // (post-THU-461) validates that the OIDC discovery URL's origin is trusted
+          // before fetching the .well-known doc, so missing the auth host produces a
+          // 400 on /v1/auth/sso/config and the SPA can't render the sign-in page.
+          { name: 'TRUSTED_ORIGINS', value: pulumi.interpolate`${args.publicUrls.app},${args.publicUrls.marketing},${args.publicUrls.auth}` },
           { name: 'CORS_ORIGINS', value: pulumi.interpolate`${args.publicUrls.app},${args.publicUrls.marketing}` },
           { name: 'CORS_ORIGIN_REGEX', value: '' },
           { name: 'POWERSYNC_URL', value: args.publicUrls.powersync },

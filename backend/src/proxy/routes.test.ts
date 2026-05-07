@@ -411,6 +411,32 @@ describe('createUniversalProxyRoutes', () => {
     expect(secondInit.body).toBeFalsy()
   })
 
+  it('307 redirect preserves POST method and body', async () => {
+    const bodyPayload = new TextEncoder().encode('{"key":"value"}')
+    mockFetch
+      .mockImplementationOnce(() =>
+        Promise.resolve(new Response(null, { status: 307, headers: { location: 'https://example.com/v2/submit' } })),
+      )
+      .mockImplementationOnce(() => Promise.resolve(makeOkResponse('done')))
+
+    const target = 'https://example.com/submit'
+    const res = await app.handle(
+      proxyRequest(target, {
+        method: 'POST',
+        body: bodyPayload,
+        headers: { 'content-type': 'application/json', 'x-proxy-follow-redirects': 'true' },
+      }),
+    )
+    expect(res.status).toBe(200)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    const [, secondInit] = mockFetch.mock.calls[1] as [string, RequestInit]
+    // 307 must NOT change the method
+    expect(secondInit.method).toBe('POST')
+    // 307 must replay the same body bytes
+    const replayedBody = new Uint8Array(secondInit.body as ArrayBuffer)
+    expect(Array.from(replayedBody)).toEqual(Array.from(bodyPayload))
+  })
+
   it('returns 502 after 5 redirect hops', async () => {
     mockFetch.mockImplementation(() =>
       Promise.resolve(new Response(null, { status: 302, headers: { location: 'https://example.com/redirect' } })),
