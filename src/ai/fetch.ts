@@ -70,11 +70,45 @@ type AiFetchStreamingResponseOptions = {
   httpClient: HttpClient
 }
 
+/**
+ * Memoized `proxyFetch` keyed on `cloudUrl`. Construction is cheap, but creating
+ * a fresh fetch (and re-reading settings) on every `createModel` call adds up
+ * across multi-step tool loops. Cached at module scope so consecutive calls in
+ * the same browser session reuse one instance — see Chris's TODO at the call
+ * sites below.
+ */
+type ProxyFetch = ReturnType<typeof createProxyFetch>
+
+let cachedProxyFetch: { cloudUrl: string; proxyFetch: ProxyFetch } | null = null
+
+/**
+ * Returns the proxy fetch for the given `cloudUrl`, reusing the previous instance
+ * when the URL is unchanged.
+ *
+ * NOTE: `createModel` is invoked from non-React contexts (`aiFetchStreamingResponse`
+ * via `chat-instance.ts`'s `customFetch`, and from `src/ai/eval/*`), so it can't
+ * call the React `useFetch()` hook. The React `ProxyFetchProvider` in
+ * `src/lib/proxy-fetch-context.tsx` covers consumers in the React tree; this
+ * module-level cache is the equivalent for non-React callers.
+ */
+const getOrCreateProxyFetch = (cloudUrl: string): ProxyFetch => {
+  if (cachedProxyFetch?.cloudUrl === cloudUrl) {
+    return cachedProxyFetch.proxyFetch
+  }
+  const proxyFetch = createProxyFetch({ cloudUrl })
+  cachedProxyFetch = { cloudUrl, proxyFetch }
+  return proxyFetch
+}
+
 export const createModel = async (modelConfig: Model) => {
+  // Hoisted out of the per-provider switch: every branch needs the cloudUrl and
+  // (for non-thunderbolt providers) a proxy fetch. Loading the DB + settings +
+  // building a fetch once per call is what Chris's "janky" TODO flagged.
+  const db = getDb()
+  const { cloudUrl } = await getSettings(db, { cloud_url: 'http://localhost:8000/v1' })
+
   switch (modelConfig.provider) {
     case 'thunderbolt': {
-      const db = getDb()
-      const { cloudUrl } = await getSettings(db, { cloud_url: 'http://localhost:8000/v1' })
       const token = getAuthToken() || 'thunderbolt'
       // SSO web flow authenticates via session cookies — the SSO callback is a
       // browser redirect, not an XHR, so `set-auth-token` never reaches the
@@ -116,12 +150,9 @@ export const createModel = async (modelConfig: Model) => {
       // X-Proxy-Passthrough-Authorization; Standalone mode (Tauri) hits
       // Anthropic directly via the Rust HTTP plugin. Either way, the user's
       // Anthropic key never goes through Thunderbolt's session auth path.
-      const db = getDb()
-      const { cloudUrl } = await getSettings(db, { cloud_url: 'http://localhost:8000/v1' })
-      const proxyFetch = createProxyFetch({ cloudUrl })
       const anthropic = createAnthropic({
         apiKey: modelConfig.apiKey || '',
-        fetch: proxyFetch,
+        fetch: getOrCreateProxyFetch(cloudUrl),
       })
       return anthropic(modelConfig.model)
     }
@@ -129,12 +160,9 @@ export const createModel = async (modelConfig: Model) => {
       if (!modelConfig.apiKey) {
         throw new Error('No API key provided')
       }
-      const db = getDb()
-      const { cloudUrl } = await getSettings(db, { cloud_url: 'http://localhost:8000/v1' })
-      const proxyFetch = createProxyFetch({ cloudUrl })
       const openai = createOpenAI({
         apiKey: modelConfig.apiKey,
-        fetch: proxyFetch,
+        fetch: getOrCreateProxyFetch(cloudUrl),
       })
       return openai(modelConfig.model)
     }
@@ -142,14 +170,11 @@ export const createModel = async (modelConfig: Model) => {
       if (!modelConfig.url) {
         throw new Error('No URL provided for custom provider')
       }
-      const db = getDb()
-      const { cloudUrl } = await getSettings(db, { cloud_url: 'http://localhost:8000/v1' })
-      const proxyFetch = createProxyFetch({ cloudUrl })
       const openaiCompatible = createOpenAICompatible({
         name: 'custom',
         baseURL: modelConfig.url,
         apiKey: modelConfig.apiKey || undefined,
-        fetch: proxyFetch,
+        fetch: getOrCreateProxyFetch(cloudUrl),
       })
       return openaiCompatible(modelConfig.model)
     }
@@ -157,16 +182,13 @@ export const createModel = async (modelConfig: Model) => {
       if (!modelConfig.apiKey) {
         throw new Error('No API key provided')
       }
-      const db = getDb()
-      const { cloudUrl } = await getSettings(db, { cloud_url: 'http://localhost:8000/v1' })
-      const proxyFetch = createProxyFetch({ cloudUrl })
       // Using OpenAI-compatible approach until @openrouter/ai-sdk-provider supports Vercel AI SDK v5
       // https://github.com/OpenRouterTeam/ai-sdk-provider/pull/77
       const openrouter = createOpenAICompatible({
         name: 'openrouter',
         baseURL: 'https://openrouter.ai/api/v1',
         apiKey: modelConfig.apiKey,
-        fetch: proxyFetch,
+        fetch: getOrCreateProxyFetch(cloudUrl),
       })
       return openrouter(modelConfig.model)
     }
