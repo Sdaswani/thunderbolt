@@ -74,11 +74,31 @@ describe('GET /v1/preview — e2e', () => {
       }),
     )
     expect(res.status).toBe(200)
+    // Successful extraction with no OG tags is a legitimate result — cache it.
+    expect(res.headers.get('cache-control')).toBe('private, max-age=600')
     const data = (await res.json()) as Record<string, string | null>
     expect(data.title).toBeNull()
     expect(data.summary).toBeNull()
     expect(data.previewImageUrl).toBeNull()
     expect(data.siteName).toBeNull()
+  })
+
+  it('does not cache the empty-fallback when upstream returns a non-OK status', async () => {
+    const upstream = createTestUpstream('preview.test', () => new Response('bad gateway', { status: 502 }))
+    handle = await createTestApp({ fetchFn: createUpstreamRouter({ 'preview.test': upstream }) })
+
+    const res = await handle.app.handle(
+      new Request(`http://localhost/v1/preview`, {
+        method: 'POST',
+        headers: { ...authHeaders(handle.bearerToken), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: 'https://preview.test/down' }),
+      }),
+    )
+    expect(res.status).toBe(200)
+    // Transient upstream failures must not stick in the per-user cache for 10 minutes.
+    expect(res.headers.get('cache-control')).not.toBe('private, max-age=600')
+    const data = (await res.json()) as Record<string, string | null>
+    expect(data.title).toBeNull()
   })
 
   it('rejects targets that resolve to a private address with 400', async () => {
