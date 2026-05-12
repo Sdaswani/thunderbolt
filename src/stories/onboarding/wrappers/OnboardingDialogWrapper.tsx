@@ -12,7 +12,7 @@ export const OnboardingDialogWrapper = () => {
   return (
     <Dialog open>
       <DialogContent
-        className="sm:max-w-[600px] sm:min-h-[500px] p-0 h-screen sm:h-auto w-screen sm:w-auto m-0 sm:m-4 rounded-none sm:rounded-lg max-h-screen overflow-hidden"
+        className="sm:max-w-[600px] sm:min-h-[500px] p-0 h-screen sm:h-auto w-screen sm:w-auto m-0 sm:m-4 rounded-none sm:rounded-xl max-h-screen overflow-hidden"
         showCloseButton={false}
       >
         <div className="h-full flex flex-col overflow-y-auto overflow-x-hidden">

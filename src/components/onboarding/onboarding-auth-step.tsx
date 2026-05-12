@@ -123,7 +123,7 @@ export const OnboardingAuthStep = ({
           description={`Search and work with your ${storageServiceName} files and documents.`}
         />
 
-        <div className="flex items-start rounded-lg pt-5">
+        <div className="flex items-start rounded-xl pt-5">
           <ConnectProviderButton
             provider={provider}
             isConnected={isConnected}
