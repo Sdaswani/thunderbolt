@@ -10,7 +10,9 @@
  * that hides Hosted (web) vs Standalone (Tauri) mode — see `proxy-fetch.ts`.
  *
  * Non-React callers (e.g. `src/ai/fetch.ts`) cannot use this hook directly; they
- * should construct or cache their own `proxyFetch` via `createProxyFetch`.
+ * should construct or cache their own `proxyFetch` via `createProxyFetch`. Note
+ * that the module-scoped cache in `src/ai/fetch.ts` is independent of this
+ * context — the two are not coordinated.
  */
 
 import { defaultSettingCloudUrl } from '@/defaults/settings'
@@ -36,12 +38,13 @@ type ProxyFetchProviderProps = {
  * is derived state, see CLAUDE.md `useEffect` discipline).
  */
 export const ProxyFetchProvider = ({ children, proxyFetch: override }: ProxyFetchProviderProps) => {
+  // `useSettings` applies the default when the stored value is null, so `cloudUrl.value`
+  // is always a non-null string here — no extra `??` chain needed.
   const { cloudUrl } = useSettings({ cloud_url: defaultSettingCloudUrl.value ?? 'http://localhost:8000/v1' })
-  const resolvedCloudUrl = cloudUrl.value ?? defaultSettingCloudUrl.value ?? 'http://localhost:8000/v1'
 
   const proxyFetch = useMemo(() => {
-    return override ?? createProxyFetch({ cloudUrl: resolvedCloudUrl })
-  }, [override, resolvedCloudUrl])
+    return override ?? createProxyFetch({ cloudUrl: cloudUrl.value })
+  }, [override, cloudUrl.value])
 
   return <ProxyFetchContext.Provider value={{ proxyFetch }}>{children}</ProxyFetchContext.Provider>
 }
