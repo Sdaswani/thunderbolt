@@ -20,10 +20,12 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+import * as AccordionPrimitive from '@radix-ui/react-accordion'
 import { AnimatePresence, motion } from 'framer-motion'
 import { type ComponentType, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router'
 
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
@@ -209,7 +211,7 @@ const SkillPreview = ({
           size="icon-sm"
           aria-label="Back"
           onClick={onClose}
-          className="absolute left-0 shrink-0 border border-border-strong text-muted-foreground hover:text-foreground md:hidden"
+          className="size-8 absolute left-0 shrink-0 rounded-md border border-border-strong text-muted-foreground hover:text-foreground md:hidden"
         >
           <ChevronLeft className="size-5" />
         </Button>
@@ -253,33 +255,57 @@ const SkillPreview = ({
       </Button>
     </div>
 
-    <article className="flex flex-col gap-3.5 rounded-xl bg-secondary p-4">
-      <div className="flex items-center gap-0.5 text-sm leading-tight text-muted-foreground">
-        <span>Description</span>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <button
-              type="button"
-              aria-label="What is this for?"
-              className="ml-1 inline-flex items-center text-muted-foreground hover:text-foreground"
-            >
-              <Info size={14} strokeWidth={1.75} />
-            </button>
-          </TooltipTrigger>
-          <TooltipContent>
-            Helps the agent decide when to use this skill. Be specific about when it applies.
-          </TooltipContent>
-        </Tooltip>
-      </div>
-      <p className="text-base leading-snug text-foreground">{card.description}</p>
-    </article>
+    <Accordion
+      type="multiple"
+      defaultValue={['description', 'instructions']}
+      className="flex min-h-0 flex-1 flex-col gap-4"
+    >
+      <AccordionItem value="description" className="rounded-xl border-b-0 bg-secondary px-4">
+        <AccordionTrigger className="py-3 text-sm leading-tight text-muted-foreground hover:no-underline">
+          <div className="flex items-center gap-0.5">
+            <span>Description</span>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  role="img"
+                  aria-label="What is this for?"
+                  className="ml-1 inline-flex items-center text-muted-foreground hover:text-foreground"
+                >
+                  <Info size={14} strokeWidth={1.75} />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                Helps the agent decide when to use this skill. Be specific about when it applies.
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        </AccordionTrigger>
+        <AccordionContent className="pb-4 pt-0">
+          <p className="text-base leading-snug text-foreground">{card.description}</p>
+        </AccordionContent>
+      </AccordionItem>
 
-    <article className="flex min-h-0 flex-1 flex-col gap-3.5 overflow-hidden rounded-xl bg-secondary p-4">
-      <p className="text-sm leading-tight text-muted-foreground">Instructions</p>
-      <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap text-base leading-snug text-foreground">
-        {card.instruction}
-      </div>
-    </article>
+      {/* Instructions uses AccordionPrimitive directly so we can apply flex-1
+          to fill remaining vertical space when open. The shared
+          AccordionContent's height-keyframe animation conflicts with flex-1
+          sizing, so this item snaps open/closed without animation. */}
+      <AccordionPrimitive.Item
+        value="instructions"
+        className="flex flex-col rounded-xl bg-secondary px-4 data-[state=open]:min-h-0 data-[state=open]:flex-1"
+      >
+        <AccordionPrimitive.Header className="flex">
+          <AccordionPrimitive.Trigger className="flex flex-1 items-center justify-between gap-4 py-3 text-sm leading-tight text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&[data-state=open]>svg]:rotate-180">
+            Instructions
+            <ChevronDown className="text-muted-foreground pointer-events-none size-4 shrink-0 transition-transform duration-200" />
+          </AccordionPrimitive.Trigger>
+        </AccordionPrimitive.Header>
+        <AccordionPrimitive.Content className="overflow-hidden data-[state=open]:flex data-[state=open]:min-h-0 data-[state=open]:flex-1 data-[state=open]:flex-col">
+          <div className="min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap pb-4 text-base leading-snug text-foreground">
+            {card.instruction}
+          </div>
+        </AccordionPrimitive.Content>
+      </AccordionPrimitive.Item>
+    </Accordion>
   </div>
 )
 
@@ -398,9 +424,9 @@ export const Marketplace = () => {
                 size="icon-sm"
                 onClick={toggleSidebar}
                 aria-label="Open menu"
-                className="-ml-1 text-muted-foreground hover:text-foreground"
+                className="size-8 -ml-1 rounded-md text-muted-foreground hover:text-foreground"
               >
-                <Menu className="size-[var(--icon-size-lg)]" />
+                <Menu className="size-[var(--icon-size-lg)]" strokeWidth={1.5} />
               </Button>
             )}
             {!isMobile && canGoBack && (

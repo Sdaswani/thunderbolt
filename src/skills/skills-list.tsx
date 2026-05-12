@@ -122,9 +122,9 @@ export const SkillsList = ({
               size="icon-sm"
               onClick={toggleSidebar}
               aria-label="Open menu"
-              className="-ml-1 text-muted-foreground hover:text-foreground"
+              className="size-8 -ml-1 rounded-md text-muted-foreground hover:text-foreground"
             >
-              <Menu className="size-[var(--icon-size-lg)]" />
+              <Menu className="size-[var(--icon-size-lg)]" strokeWidth={1.5} />
             </Button>
           )}
           {!isMobile && <h1 className="text-xl leading-tight text-foreground">Skills</h1>}
@@ -136,7 +136,7 @@ export const SkillsList = ({
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="outline" size="icon-lg" aria-label="Add skill" className="size-9">
+            <Button variant="outline" size="icon-lg" aria-label="Add skill" className="size-8 rounded-md">
               <Plus />
             </Button>
           </DropdownMenuTrigger>
