@@ -65,10 +65,10 @@ const settingsSchema = z
     powersyncTokenExpirySeconds: z.coerce.number().int().positive().default(3600),
 
     // CORS settings — comma-separated list of exact origins.
-    // `corsAllowHeaders` is no longer authoritative for the main backend: it
-    // now uses `cors({ allowedHeaders: true })`, which echoes the request's
-    // Access-Control-Request-Headers. The env var stays in place for the
-    // PostHog proxy mount, which still pins a static allowlist.
+    // `corsAllowHeaders` is no longer consumed by any production mount: both
+    // the main backend and the PostHog proxy use `cors({ allowedHeaders: true })`,
+    // which echoes the request's Access-Control-Request-Headers. The env var
+    // and default remain only for backward compat and test fixtures.
     corsOrigins: z.string().default('http://localhost:1420,tauri://localhost,http://tauri.localhost'),
     corsAllowCredentials: z.boolean().default(true),
     corsAllowMethods: z.string().default('GET,POST,PUT,DELETE,PATCH,OPTIONS'),
