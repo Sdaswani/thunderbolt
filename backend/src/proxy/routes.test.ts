@@ -592,6 +592,44 @@ describe('createUniversalProxyRoutes', () => {
     expect(mockFetch).not.toHaveBeenCalled()
   })
 
+  it('returns 413 for streaming chunked body over 10 MB with NO Content-Length (DoS guard)', async () => {
+    // Regression: without bounded streaming, `await response.arrayBuffer()` would
+    // materialise the entire upload before the cap fires. We expose this by sending
+    // a streamed body (Transfer-Encoding: chunked equivalent) that pushes chunks
+    // until we exceed the cap. The proxy must early-terminate without OOMing.
+    const target = 'https://example.com/upload'
+    const chunkSize = 256 * 1024 // 256 KB
+    const totalChunks = 48 // 12 MB total — exceeds 10 MB cap
+    let chunksProduced = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (chunksProduced >= totalChunks) {
+          controller.close()
+          return
+        }
+        controller.enqueue(new Uint8Array(chunkSize))
+        chunksProduced++
+      },
+    })
+    const res = await app.handle(
+      // Critically: NO content-length header. needsBodyBuffer=true via follow-redirects.
+      new Request('http://localhost/proxy', {
+        method: 'POST',
+        body: stream,
+        headers: {
+          'x-proxy-target-url': target,
+          'x-proxy-follow-redirects': 'true',
+        },
+        // @ts-expect-error — duplex is not in the standard RequestInit type
+        duplex: 'half',
+      }),
+    )
+    expect(res.status).toBe(413)
+    expect(mockFetch).not.toHaveBeenCalled()
+    // Early-termination proof: we exited the loop before draining the whole stream.
+    expect(chunksProduced).toBeLessThan(totalChunks)
+  })
+
   // ---------------------------------------------------------------------------
   // Auth gate
   // ---------------------------------------------------------------------------
@@ -730,6 +768,45 @@ describe('createUniversalProxyRoutes', () => {
       // The final hop is a GET with `null` body → 0 bytes_in. The proxy reports the final hop's bytes_in, not aggregate.
       expect(events).toHaveLength(1)
       expect(events[0].bytes_in).toBe(0)
+    })
+
+    it('records bytes_in from a streaming POST body (no redirect-follow) — bytesIn deferred-getter regression', async () => {
+      // Exercises the validator-fixed path (commit 7d5ddada): a streaming POST that
+      // does not follow redirects uses capStream on the request body and exposes
+      // bytesIn as a `() => number` getter so the emission (which fires from the
+      // RESPONSE stream's onComplete) sees the final upload size after the body
+      // has fully drained. Pre-fix, the value was captured at the moment fetch
+      // resolved response headers and could be under-reported. We exercise this
+      // by reading the entire request body inside the mock fetch (forces drain
+      // before the response is constructed).
+      const payload = new TextEncoder().encode('z'.repeat(4096))
+      mockFetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
+        // Drain the request body before responding — this is the exact scenario
+        // the deferred getter exists for. The capStream wrapping the request
+        // body increments its byte counter as we read.
+        if (init.body instanceof ReadableStream) {
+          const reader = init.body.getReader()
+          while (true) {
+            const { done } = await reader.read()
+            if (done) break
+          }
+        }
+        return new Response('ok', { status: 200 })
+      })
+      const { app: a, events } = buildApp()
+      const res = await a.handle(
+        proxyRequest('https://example.com/upload', {
+          method: 'POST',
+          body: payload,
+          headers: { 'x-proxy-passthrough-content-type': 'application/octet-stream' },
+        }),
+      )
+      await drain(res)
+      expect(events).toHaveLength(1)
+      // bytes_in is reported AFTER the request stream has drained, so it
+      // reflects the full upload size — not 0 from a pre-drain read.
+      expect(events[0].bytes_in).toBe(payload.byteLength)
+      expect(events[0].bytes_out).toBe(2) // 'ok'
     })
 
     it('tags error_type="ssrf" when target resolves to a private address', async () => {

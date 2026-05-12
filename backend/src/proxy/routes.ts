@@ -244,10 +244,34 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
 
             let bufferedBody: ArrayBuffer | null = null
             if (needsBodyBuffer && ctx.request.body) {
-              bufferedBody = await new Response(ctx.request.body as BodyInit).arrayBuffer()
-              if (bufferedBody.byteLength > maxBodyBytes) {
-                return fail(413, 'Request body too large', 'cap_exceeded', targetUrl)
+              // Stream the body into a bounded accumulator. Reading via Response#arrayBuffer
+              // would materialise the FULL upload into memory before any size check, letting
+              // a chunked upload (no Content-Length) OOM the server. Here we early-terminate
+              // the moment we exceed maxBodyBytes so worst-case memory is ~one chunk over.
+              const reader = (ctx.request.body as ReadableStream<Uint8Array>).getReader()
+              const chunks: Uint8Array[] = []
+              let total = 0
+              try {
+                for (;;) {
+                  const { done, value } = await reader.read()
+                  if (done) break
+                  total += value.byteLength
+                  if (total > maxBodyBytes) {
+                    reader.cancel().catch(() => {})
+                    return fail(413, 'Request body too large', 'cap_exceeded', targetUrl)
+                  }
+                  chunks.push(value)
+                }
+              } finally {
+                reader.releaseLock()
               }
+              const merged = new Uint8Array(total)
+              let offset = 0
+              for (const chunk of chunks) {
+                merged.set(chunk, offset)
+                offset += chunk.byteLength
+              }
+              bufferedBody = merged.buffer
             }
 
             // Per-hop redirect loop: hop 0 = initial fetch; hops 1..maxHops = follows.
@@ -308,6 +332,13 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
               // compressed bytes (and `content-encoding`) pass through unchanged so
               // the browser decodes; `duplex: 'half'` enables streaming request
               // bodies. Both are absent from the standard `RequestInit` type.
+              // Bun (>=1.3) auto-decompresses but ALSO keeps `content-encoding` on the
+              // Response — without `decompress: false` we would forward gzip headers
+              // with already-decoded bodies and the browser would corrupt the result.
+              // Verified empirically on Bun 1.3.10; if Bun ever changes this, the
+              // routes.test.ts "passes decompress: false" assertion will still pass
+              // but real responses will silently break — add an integration test
+              // before bumping Bun major.
               const response = await fetchFn(pinnedUrl, {
                 method: currentMethod,
                 headers: hopHeaders,
