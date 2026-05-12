@@ -90,14 +90,21 @@ let cachedProxyFetch: { cloudUrl: string; proxyFetch: ProxyFetch } | null = null
  * call the React `useFetch()` hook. The React `ProxyFetchProvider` in
  * `src/lib/proxy-fetch-context.tsx` covers consumers in the React tree; this
  * module-level cache is the equivalent for non-React callers.
+ *
+ * Exported for unit testing; production callers should let `createModel` invoke this.
  */
-const getOrCreateProxyFetch = (cloudUrl: string): ProxyFetch => {
+export const getOrCreateProxyFetch = (cloudUrl: string): ProxyFetch => {
   if (cachedProxyFetch?.cloudUrl === cloudUrl) {
     return cachedProxyFetch.proxyFetch
   }
   const proxyFetch = createProxyFetch({ cloudUrl })
   cachedProxyFetch = { cloudUrl, proxyFetch }
   return proxyFetch
+}
+
+/** Test-only: clears the module-scoped proxy-fetch cache so tests start from a known state. */
+export const __resetProxyFetchCacheForTests = () => {
+  cachedProxyFetch = null
 }
 
 export const createModel = async (modelConfig: Model) => {
