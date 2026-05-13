@@ -17,6 +17,7 @@ import { getDb } from '@/db/database'
 import { isSsoMode } from '@/lib/auth-mode'
 import { getAuthToken } from '@/lib/auth-token'
 import { fetch as baseFetch } from '@/lib/fetch'
+import { isTauri } from '@/lib/platform'
 import { createProxyFetch } from '@/lib/proxy-fetch'
 import { createToolset, getAvailableTools } from '@/lib/tools'
 import type { Model, SaveMessagesFunction, ThunderboltUIMessage } from '@/types'
@@ -71,19 +72,35 @@ type AiFetchStreamingResponseOptions = {
 }
 
 /**
- * Memoized `proxyFetch` keyed on `cloudUrl`. Construction is cheap, but creating
- * a fresh fetch (and re-reading settings) on every `createModel` call adds up
- * across multi-step tool loops. Cached at module scope so consecutive calls in
- * the same browser session reuse one instance — see Chris's TODO at the call
- * sites below.
+ * Memoized `proxyFetch` keyed on `cloudUrl` AND the effective `proxy_enabled`
+ * toggle. Construction is cheap, but creating a fresh fetch (and re-reading
+ * settings) on every `createModel` call adds up across multi-step tool loops.
+ * Cached at module scope so consecutive calls in the same browser session reuse
+ * one instance — see Chris's TODO at the call sites below. Including the toggle
+ * in the cache key means flipping the Network preference invalidates the cache
+ * the next time `createModel` runs.
  */
 type ProxyFetch = ReturnType<typeof createProxyFetch>
 
-let cachedProxyFetch: { cloudUrl: string; proxyFetch: ProxyFetch } | null = null
+type CacheKey = { cloudUrl: string; proxyEnabled: boolean }
+let cachedProxyFetch: { key: CacheKey; proxyFetch: ProxyFetch } | null = null
+
+/** Derive effective proxy_enabled from localStorage + platform. Web ignores the
+ *  toggle (browser CORS forces proxying); Tauri respects it (default off). */
+const computeEffectiveProxyEnabled = (
+  isStandalone: () => boolean = isTauri,
+  read: () => string | null = () =>
+    typeof localStorage === 'undefined' ? null : localStorage.getItem('proxy_enabled'),
+): boolean => {
+  if (!isStandalone()) {
+    return true
+  }
+  return read() === 'true'
+}
 
 /**
  * Returns the proxy fetch for the given `cloudUrl`, reusing the previous instance
- * when the URL is unchanged.
+ * when both the URL and the effective `proxy_enabled` toggle are unchanged.
  *
  * NOTE: `createModel` is invoked from non-React contexts (`aiFetchStreamingResponse`
  * via `chat-instance.ts`'s `customFetch`, and from `src/ai/eval/*`), so it can't
@@ -92,13 +109,23 @@ let cachedProxyFetch: { cloudUrl: string; proxyFetch: ProxyFetch } | null = null
  * module-level cache is the equivalent for non-React callers.
  *
  * Exported for unit testing; production callers should let `createModel` invoke this.
+ *
+ * The optional `deps` parameter is a testing seam — production callers omit it.
  */
-export const getOrCreateProxyFetch = (cloudUrl: string): ProxyFetch => {
-  if (cachedProxyFetch?.cloudUrl === cloudUrl) {
+export const getOrCreateProxyFetch = (
+  cloudUrl: string,
+  deps?: { isStandalone?: () => boolean; readProxyEnabled?: () => string | null },
+): ProxyFetch => {
+  const proxyEnabled = computeEffectiveProxyEnabled(deps?.isStandalone, deps?.readProxyEnabled)
+  if (cachedProxyFetch?.key.cloudUrl === cloudUrl && cachedProxyFetch.key.proxyEnabled === proxyEnabled) {
     return cachedProxyFetch.proxyFetch
   }
-  const proxyFetch = createProxyFetch({ cloudUrl })
-  cachedProxyFetch = { cloudUrl, proxyFetch }
+  const proxyFetch = createProxyFetch({
+    cloudUrl,
+    isStandalone: deps?.isStandalone,
+    getProxyEnabled: () => proxyEnabled,
+  })
+  cachedProxyFetch = { key: { cloudUrl, proxyEnabled }, proxyFetch }
   return proxyFetch
 }
 

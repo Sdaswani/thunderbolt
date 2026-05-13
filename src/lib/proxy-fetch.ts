@@ -118,6 +118,16 @@ export type ProxyFetchOptions = {
   /** Optional Tauri fetch override — defaults to `@tauri-apps/plugin-http` fetch.
    *  Tests inject a stub. */
   tauriFetch?: typeof fetch
+  /** Effective `proxy_enabled` value. Defaults to `() => true`, which preserves
+   *  Hosted-mode (web) behaviour for callers that don't wire the user setting.
+   *
+   *  Web always proxies (browser CORS forces it — the toggle is disabled in the
+   *  UI). Tauri respects the user toggle; when off, requests go upstream-direct
+   *  via the Tauri HTTP plugin so the user's IP is hidden from us. Callers that
+   *  want to honour the toggle (the React provider and the module-scoped cache
+   *  in `src/ai/fetch.ts`) pass a getter that reads the `proxy_enabled` localStorage
+   *  key + derives the effective value per platform. */
+  getProxyEnabled?: () => boolean
 }
 
 /** Build a fetch implementation that hides Hosted/Standalone mode from callers. */
@@ -125,8 +135,9 @@ export const createProxyFetch = (options: ProxyFetchOptions): typeof fetch => {
   const proxyUrl = `${options.cloudUrl.replace(/\/$/, '')}/proxy`
   return (async (input, init) => {
     const standalone = (options.isStandalone ?? isTauri)()
-    if (standalone) {
-      // Standalone: hit the upstream directly through Tauri's HTTP plugin.
+    const proxyEnabled = options.getProxyEnabled?.() ?? true
+    if (standalone && !proxyEnabled) {
+      // Standalone + toggle off: hit the upstream directly through Tauri's HTTP plugin.
       const tFetch = options.tauriFetch ?? (tauriFetch as unknown as typeof fetch)
       return tFetch(input as RequestInfo, init ?? {}) as unknown as Response
     }

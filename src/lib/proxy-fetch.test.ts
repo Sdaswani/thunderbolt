@@ -66,13 +66,14 @@ describe('createProxyFetch — Hosted mode', () => {
 })
 
 describe('createProxyFetch — Standalone (Tauri) mode', () => {
-  it('calls Tauri fetch directly without rewriting headers', async () => {
+  it('calls Tauri fetch directly without rewriting headers when toggle is off (default)', async () => {
     const tauriFetchMock = mock(async () => new Response('tauri-direct', { status: 200 }))
 
     const proxyFetch = createProxyFetch({
       cloudUrl: 'http://localhost:8000/v1',
       isStandalone: () => true,
       tauriFetch: tauriFetchMock as unknown as typeof fetch,
+      getProxyEnabled: () => false,
     })
 
     await proxyFetch('https://example.com/api', {
@@ -85,6 +86,70 @@ describe('createProxyFetch — Standalone (Tauri) mode', () => {
     expect(calledUrl).toBe('https://example.com/api')
     const h = new Headers(calledInit.headers)
     expect(h.get('authorization')).toBe('Bearer abc')
+  })
+})
+
+describe('createProxyFetch — proxy_enabled toggle', () => {
+  it('Tauri + toggle on: routes through the hosted proxy (privacy mode)', async () => {
+    const tauriFetchMock = mock(async () => new Response('should-not-be-called', { status: 500 }))
+    const hostedFetchMock = mock(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : input.toString()
+      return new Response(`hosted:${url}`, { status: 200 })
+    })
+
+    const proxyFetch = createProxyFetch({
+      cloudUrl: 'http://localhost:8000/v1',
+      isStandalone: () => true,
+      tauriFetch: tauriFetchMock as unknown as typeof fetch,
+      fetchImpl: hostedFetchMock as unknown as typeof fetch,
+      getProxyEnabled: () => true,
+    })
+
+    await proxyFetch('https://example.com/api', { method: 'GET' })
+
+    expect(tauriFetchMock).toHaveBeenCalledTimes(0)
+    expect(hostedFetchMock).toHaveBeenCalledTimes(1)
+    const [hostedReq] = hostedFetchMock.mock.calls[0] as unknown as [Request]
+    expect(hostedReq.url).toBe('http://localhost:8000/v1/proxy')
+    expect(hostedReq.headers.get('x-proxy-target-url')).toBe('https://example.com/api')
+  })
+
+  it('Web (not standalone): always proxies, ignoring the toggle value', async () => {
+    const hostedFetchMock = mock(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : input.toString()
+      return new Response(`hosted:${url}`, { status: 200 })
+    })
+
+    const proxyFetch = createProxyFetch({
+      cloudUrl: 'http://localhost:8000/v1',
+      isStandalone: () => false,
+      fetchImpl: hostedFetchMock as unknown as typeof fetch,
+      // Even with the toggle "off", Web must still proxy — CORS forces it.
+      getProxyEnabled: () => false,
+    })
+
+    await proxyFetch('https://example.com/api', { method: 'GET' })
+
+    expect(hostedFetchMock).toHaveBeenCalledTimes(1)
+    const [hostedReq] = hostedFetchMock.mock.calls[0] as unknown as [Request]
+    expect(hostedReq.url).toBe('http://localhost:8000/v1/proxy')
+  })
+
+  it('defaults getProxyEnabled to true when not provided (preserves Web behaviour)', async () => {
+    const hostedFetchMock = mock(async () => new Response('ok', { status: 200 }))
+
+    const proxyFetch = createProxyFetch({
+      cloudUrl: 'http://localhost:8000/v1',
+      isStandalone: () => false,
+      fetchImpl: hostedFetchMock as unknown as typeof fetch,
+      // getProxyEnabled omitted on purpose.
+    })
+
+    await proxyFetch('https://example.com/api', { method: 'GET' })
+
+    expect(hostedFetchMock).toHaveBeenCalledTimes(1)
+    const [hostedReq] = hostedFetchMock.mock.calls[0] as unknown as [Request]
+    expect(hostedReq.url).toBe('http://localhost:8000/v1/proxy')
   })
 })
 

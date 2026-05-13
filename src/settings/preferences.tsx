@@ -5,12 +5,14 @@
 import { useAuth } from '@/contexts'
 import { useSignInModal } from '@/contexts/sign-in-modal-context'
 import { useCountryUnits } from '@/hooks/use-country-units'
+import { useLocalStorage } from '@/hooks/use-local-storage'
 import type { LocationData } from '@/hooks/use-location-search'
 import { useSettings } from '@/hooks/use-settings'
 import { useUnitsOptions } from '@/hooks/use-units-options'
 import { privacyPolicyUrl } from '@/lib/constants'
 import { extractCountryFromLocation } from '@/lib/country-utils'
 import { clearLocalData } from '@/lib/cleanup'
+import { isTauri } from '@/lib/platform'
 import { trackEvent, useTelemetryAvailable } from '@/lib/posthog'
 import type { CountryUnitsData } from '@/types'
 import { useHttpClient } from '@/contexts'
@@ -40,6 +42,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { SectionCard } from '@/components/ui/section-card'
 import { Switch } from '@/components/ui/switch'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { usePostHog } from 'posthog-js/react'
 import { usePowerSyncStatus } from '@/hooks/use-powersync-status'
 import { useSyncEnabledToggle } from '@/hooks/use-sync-enabled-toggle'
@@ -97,6 +100,14 @@ export default function PreferencesSettingsPage() {
 
   const postHog = usePostHog()
   const telemetryAvailable = useTelemetryAvailable()
+
+  // Network: `proxy_enabled` is device-local (localStorage) because it controls
+  // request transport (privacy on Tauri vs. CORS bypass on Web), not a synced
+  // user preference. Web ignores the stored value — browser CORS forces the
+  // proxy path — so the toggle is UI-disabled with an explanatory tooltip.
+  const onTauri = isTauri()
+  const [proxyEnabledStr, setProxyEnabledStr] = useLocalStorage('proxy_enabled', 'false')
+  const effectiveProxyEnabled = onTauri ? proxyEnabledStr === 'true' : true
 
   const httpClient = useHttpClient()
   const { syncEnabled, syncSetupOpen, setSyncSetupOpen, handleSyncToggle, handleSyncSetupComplete } =
@@ -591,6 +602,43 @@ export default function PreferencesSettingsPage() {
               disabled={unitsOptionsLoading}
             />
           </div>
+        </div>
+      </SectionCard>
+
+      <div className="h-6" />
+
+      <SectionCard title="Network">
+        <div className="flex flex-row items-center gap-4">
+          <div className="flex-1">
+            <label className="text-sm font-medium">Use Cloud Proxy</label>
+            <p className="text-sm text-muted-foreground">
+              When enabled, requests are routed through Thunderbolt's cloud proxy. When disabled, the app connects
+              directly to upstream servers.
+            </p>
+          </div>
+          {onTauri ? (
+            <Switch
+              checked={effectiveProxyEnabled}
+              onCheckedChange={(checked) => setProxyEnabledStr(checked ? 'true' : 'false')}
+              aria-label="Use Cloud Proxy"
+            />
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0} aria-label="Cloud proxy is required in the web app">
+                  <Switch
+                    checked={effectiveProxyEnabled}
+                    disabled
+                    aria-label="Use Cloud Proxy"
+                    className="pointer-events-none"
+                  />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top">
+                <p>Proxying is required in the web app to bypass browser CORS restrictions.</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </SectionCard>
 
