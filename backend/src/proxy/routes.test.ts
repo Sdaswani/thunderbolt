@@ -727,10 +727,7 @@ describe('createUniversalProxyRoutes', () => {
 
     it('records non-zero duration_ms (not hardcoded 0) — bot MEDIUM fix', async () => {
       mockFetch.mockImplementationOnce(
-        () =>
-          new Promise((resolve) =>
-            setTimeout(() => resolve(new Response('ok', { status: 200 })), 15),
-          ),
+        () => new Promise((resolve) => setTimeout(() => resolve(new Response('ok', { status: 200 })), 15)),
       )
       const { app: a, events } = buildApp()
       const res = await a.handle(proxyRequest('https://example.com/r', { method: 'GET' }))

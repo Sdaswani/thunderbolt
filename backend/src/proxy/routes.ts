@@ -294,7 +294,12 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
                 if (hop === 0) {
                   return fail(400, `Blocked: ${msg}`, isTimeout ? 'dns_timeout' : 'ssrf', currentUrl)
                 }
-                return fail(502, 'Bad gateway (SSRF or DNS error on redirect)', isTimeout ? 'dns_timeout' : 'ssrf', currentUrl)
+                return fail(
+                  502,
+                  'Bad gateway (SSRF or DNS error on redirect)',
+                  isTimeout ? 'dns_timeout' : 'ssrf',
+                  currentUrl,
+                )
               }
 
               // Compose hop-specific headers: passthrough + Host (for SNI).
@@ -325,8 +330,7 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
                     })
                   : null
 
-              const upstreamBody: BodyInit | null =
-                requestCap?.stream ?? currentBufferedBody ?? null
+              const upstreamBody: BodyInit | null = requestCap?.stream ?? currentBufferedBody ?? null
 
               // Bun-specific fetch options: `decompress: false` lets the original
               // compressed bytes (and `content-encoding`) pass through unchanged so
@@ -356,9 +360,7 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
                *  drained, not the in-flight count at the moment response headers
                *  were received. */
               const bytesIn: () => number =
-                requestCap !== null
-                  ? requestCap.bytesRead
-                  : () => currentBufferedBody?.byteLength ?? 0
+                requestCap !== null ? requestCap.bytesRead : () => currentBufferedBody?.byteLength ?? 0
 
               if (!REDIRECT_STATUSES.has(response.status)) {
                 return buildProxyResponse(response, upstreamCtl, currentUrl, {

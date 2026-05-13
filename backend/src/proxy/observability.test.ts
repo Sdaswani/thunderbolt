@@ -14,11 +14,7 @@
  */
 
 import { describe, expect, it } from 'bun:test'
-import {
-  BasicTracerProvider,
-  InMemorySpanExporter,
-  SimpleSpanProcessor,
-} from '@opentelemetry/sdk-trace-node'
+import { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-node'
 import { AsyncHooksContextManager } from '@opentelemetry/context-async-hooks'
 import { context, trace } from '@opentelemetry/api'
 import { createObservabilityRecorder, noopObservability, type ProxyErrorType } from './observability'
