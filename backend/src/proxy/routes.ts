@@ -7,13 +7,13 @@ import { createAuthMacro } from '@/auth/elysia-plugin'
 import { safeErrorHandler } from '@/middleware/error-handling'
 import { ensureHttps, validateAndPin, type DnsLookup } from '@/utils/url-validation'
 import {
-  DROPPED_RESPONSE_HEADERS,
-  FINAL_URL_HEADER,
-  FOLLOW_REDIRECTS_HEADER,
-  PASSTHROUGH_PREFIX,
-  PASSTHROUGH_PREFIX_CASED,
-  REDIRECT_STATUSES,
-  TARGET_URL_HEADER,
+  droppedResponseHeaders,
+  finalUrlHeader,
+  followRedirectsHeader,
+  passthroughPrefix,
+  passthroughPrefixCased,
+  redirectStatuses,
+  targetUrlHeader,
 } from '@shared/proxy-protocol'
 import { Elysia, type AnyElysia } from 'elysia'
 import { capStream } from './streaming'
@@ -33,8 +33,8 @@ const streamIdleMs = 30_000
 const allowedMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'])
 const bodylessMethods = new Set(['GET', 'HEAD', 'OPTIONS'])
 
-const targetUrlHeaderLower = TARGET_URL_HEADER.toLowerCase()
-const followRedirectsHeaderLower = FOLLOW_REDIRECTS_HEADER.toLowerCase()
+const targetUrlHeaderLower = targetUrlHeader.toLowerCase()
+const followRedirectsHeaderLower = followRedirectsHeader.toLowerCase()
 
 /** Race a promise against a DNS timeout. Throws `Error('DNS_TIMEOUT')` on expiry.
  *  Note: dns.promises.lookup does not honor an AbortSignal in Node 22, so this only
@@ -79,8 +79,8 @@ const buildOutboundHeaders = (
   let invalid = false
   inbound.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (!lower.startsWith(PASSTHROUGH_PREFIX)) return
-    const upstreamKey = lower.slice(PASSTHROUGH_PREFIX.length)
+    if (!lower.startsWith(passthroughPrefix)) return
+    const upstreamKey = lower.slice(passthroughPrefix.length)
     if (!upstreamKey) return
     if (!isPrintableAscii(value)) {
       invalid = true
@@ -100,8 +100,8 @@ const buildOutboundHeaders = (
 const buildResponseHeaders = (upstream: Headers, finalUrl: string): Headers => {
   const out = new Headers()
   upstream.forEach((value, key) => {
-    if (DROPPED_RESPONSE_HEADERS.has(key.toLowerCase())) return
-    out.set(`${PASSTHROUGH_PREFIX_CASED}${key}`, value)
+    if (droppedResponseHeaders.has(key.toLowerCase())) return
+    out.set(`${passthroughPrefixCased}${key}`, value)
   })
 
   // Proxy-set headers (NOT prefixed): describe the proxy's own response framing
@@ -110,7 +110,7 @@ const buildResponseHeaders = (upstream: Headers, finalUrl: string): Headers => {
   out.set('X-Content-Type-Options', 'nosniff')
   out.set('Content-Disposition', 'attachment')
   out.set('Cross-Origin-Resource-Policy', 'cross-origin')
-  out.set(FINAL_URL_HEADER, finalUrl)
+  out.set(finalUrlHeader, finalUrl)
   return out
 }
 
@@ -193,10 +193,10 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
             // out of standard HTTP access logs which only record method + path.
             const targetHeader = ctx.proxyTargetUrl
             if (!targetHeader || targetHeader.trim() === '') {
-              return fail(400, `Missing ${TARGET_URL_HEADER} header`, 'invalid_target')
+              return fail(400, `Missing ${targetUrlHeader} header`, 'invalid_target')
             }
             if (!isPrintableAscii(targetHeader)) {
-              return fail(400, `Invalid ${TARGET_URL_HEADER} header`, 'invalid_target')
+              return fail(400, `Invalid ${targetUrlHeader} header`, 'invalid_target')
             }
 
             const normalised = normaliseTargetUrl(targetHeader)
@@ -224,9 +224,9 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
             }
 
             // Strict literal match — anything other than 'true'/'false' falls back to default.
-            const followRedirectsHeader = ctx.request.headers.get(followRedirectsHeaderLower)?.toLowerCase()
+            const followRedirectsValue = ctx.request.headers.get(followRedirectsHeaderLower)?.toLowerCase()
             const followOverride =
-              followRedirectsHeader === 'true' ? true : followRedirectsHeader === 'false' ? false : null
+              followRedirectsValue === 'true' ? true : followRedirectsValue === 'false' ? false : null
 
             const initialHeadersResult = buildOutboundHeaders(ctx.request.headers)
             if ('error' in initialHeadersResult) {
@@ -362,7 +362,7 @@ export const createUniversalProxyRoutes = (options: CreateUniversalProxyRoutesOp
               const bytesIn: () => number =
                 requestCap !== null ? requestCap.bytesRead : () => currentBufferedBody?.byteLength ?? 0
 
-              if (!REDIRECT_STATUSES.has(response.status)) {
+              if (!redirectStatuses.has(response.status)) {
                 return buildProxyResponse(response, upstreamCtl, currentUrl, {
                   emit,
                   targetUrl: currentUrl,

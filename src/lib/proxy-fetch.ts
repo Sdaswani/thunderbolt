@@ -19,11 +19,11 @@
 
 import { fetch as tauriFetch } from '@tauri-apps/plugin-http'
 import {
-  PASSTHROUGH_PREFIX,
-  PASSTHROUGH_PREFIX_CASED,
-  PROXY_FRAMING_HEADERS,
-  TARGET_URL_HEADER,
-  WS_TARGET_PREFIX,
+  passthroughPrefix,
+  passthroughPrefixCased,
+  proxyFramingHeaders,
+  targetUrlHeader,
+  wsTargetPrefix,
 } from '@shared/proxy-protocol'
 import { isTauri } from './platform'
 
@@ -54,14 +54,14 @@ const buildHostedRequest = (proxyUrl: string, input: RequestInfo | URL, init?: R
   const sourceHeaders = new Headers(input instanceof Request ? input.headers : init?.headers)
 
   const proxyHeaders = new Headers()
-  proxyHeaders.set(TARGET_URL_HEADER, sourceUrl)
+  proxyHeaders.set(targetUrlHeader, sourceUrl)
 
   sourceHeaders.forEach((value, key) => {
     const lower = key.toLowerCase()
     if (skipHeaders.has(lower) || lower.startsWith('x-proxy-')) {
       return
     }
-    proxyHeaders.set(`${PASSTHROUGH_PREFIX_CASED}${key}`, value)
+    proxyHeaders.set(`${passthroughPrefixCased}${key}`, value)
   })
 
   const method = init?.method ?? (input instanceof Request ? input.method : 'GET')
@@ -86,9 +86,9 @@ const unwrapHostedResponse = (response: Response): Response => {
   const fallback = new Headers()
   response.headers.forEach((value, key) => {
     const lower = key.toLowerCase()
-    if (lower.startsWith(PASSTHROUGH_PREFIX)) {
-      passthrough.set(lower.slice(PASSTHROUGH_PREFIX.length), value)
-    } else if (!PROXY_FRAMING_HEADERS.has(lower)) {
+    if (lower.startsWith(passthroughPrefix)) {
+      passthrough.set(lower.slice(passthroughPrefix.length), value)
+    } else if (!proxyFramingHeaders.has(lower)) {
       fallback.set(lower, value)
     }
   })
@@ -168,7 +168,7 @@ export const createProxyWebSocket =
       return new WebSocket(url, protocols)
     }
     const wsBase = options.cloudUrl.replace(/^http/, 'ws').replace(/\/$/, '')
-    const targetSubprotocol = `${WS_TARGET_PREFIX}${b64UrlEncode(url)}`
+    const targetSubprotocol = `${wsTargetPrefix}${b64UrlEncode(url)}`
     return new WebSocket(`${wsBase}/proxy/ws`, [targetSubprotocol, ...(protocols ?? [])])
   }
 
