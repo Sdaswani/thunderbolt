@@ -612,8 +612,7 @@ export default function PreferencesSettingsPage() {
           <div className="flex-1">
             <label className="text-sm font-medium">Use Cloud Proxy</label>
             <p className="text-sm text-muted-foreground">
-              When enabled, requests are routed through Thunderbolt's cloud proxy. When disabled, the app connects
-              directly to upstream servers.
+              When enabled, requests are routed through Thunderbolt's cloud proxy.
             </p>
           </div>
           {onTauri ? (
