@@ -112,6 +112,13 @@ export default function PreferencesSettingsPage() {
     () => onTauri,
     () => proxyEnabledStr,
   )
+  const proxyDisabled = !onTauri || !isAuthenticated
+  const tooltipReason = !onTauri
+    ? 'Proxying is required in the web app to bypass browser CORS restrictions.'
+    : 'Sign in to enable cloud proxy.'
+  // When the toggle is auth-disabled, render it as OFF so the UI honestly reflects
+  // that the user can't use the proxy until they sign in.
+  const proxyChecked = proxyDisabled && onTauri ? false : effectiveProxyEnabled
 
   const httpClient = useHttpClient()
   const { syncEnabled, syncSetupOpen, setSyncSetupOpen, handleSyncToggle, handleSyncSetupComplete } =
@@ -619,18 +626,12 @@ export default function PreferencesSettingsPage() {
               When enabled, requests are routed through Thunderbolt's cloud proxy.
             </p>
           </div>
-          {onTauri ? (
-            <Switch
-              checked={effectiveProxyEnabled}
-              onCheckedChange={(checked) => setProxyEnabledStr(checked ? 'true' : 'false')}
-              aria-label="Use Cloud Proxy"
-            />
-          ) : (
+          {proxyDisabled ? (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span tabIndex={0} aria-label="Cloud proxy is required in the web app">
+                <span tabIndex={0} aria-label={tooltipReason}>
                   <Switch
-                    checked={effectiveProxyEnabled}
+                    checked={proxyChecked}
                     disabled
                     aria-label="Use Cloud Proxy"
                     className="pointer-events-none"
@@ -638,9 +639,15 @@ export default function PreferencesSettingsPage() {
                 </span>
               </TooltipTrigger>
               <TooltipContent side="top">
-                <p>Proxying is required in the web app to bypass browser CORS restrictions.</p>
+                <p>{tooltipReason}</p>
               </TooltipContent>
             </Tooltip>
+          ) : (
+            <Switch
+              checked={proxyChecked}
+              onCheckedChange={(checked) => setProxyEnabledStr(checked ? 'true' : 'false')}
+              aria-label="Use Cloud Proxy"
+            />
           )}
         </div>
       </SectionCard>
