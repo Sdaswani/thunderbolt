@@ -8,7 +8,7 @@ export * from './auth-schema'
 // Re-export waitlist schema
 export * from './waitlist-schema'
 
-// Re-export PowerSync schema tables
+// Re-export PowerSync schema tables (includes workspace management tables)
 export * from './powersync-schema'
 
 // Re-export rate limit schema

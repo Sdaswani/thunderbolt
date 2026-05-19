@@ -14,20 +14,58 @@ port: 8080
 sync_rules:
   content: |
     bucket_definitions:
-      user_data:
+      # Account-level data — one bucket per user, always present.
+      account_data:
         parameters: SELECT request.user_id() as user_id
         data:
-          - SELECT * FROM powersync.settings WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.chat_threads WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.chat_messages WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.tasks WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.models WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.mcp_servers WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.prompts WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.triggers WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.modes WHERE user_id = bucket.user_id
-          - SELECT * FROM powersync.model_profiles WHERE user_id = bucket.user_id
           - SELECT * FROM powersync.devices WHERE user_id = bucket.user_id
+          - SELECT * FROM powersync.settings WHERE user_id = bucket.user_id
+          - SELECT * FROM powersync.workspaces
+              WHERE deleted_at IS NULL
+              AND id IN (
+                SELECT workspace_id FROM powersync.workspace_members
+                WHERE user_id = bucket.user_id AND removed_at IS NULL
+              )
+
+      # Workspace data — one bucket instance per active workspace membership.
+      # workspace_members is included so every active member sees the full roster (needed for the
+      # settings / member-management UI). User-private rows (chat_threads, chat_messages, tasks)
+      # are filtered to the requester.
+      workspace_data:
+        parameters: |
+          SELECT wm.workspace_id
+          FROM powersync.workspace_members wm
+          WHERE wm.user_id = request.user_id()
+            AND wm.removed_at IS NULL
+        data:
+          - SELECT * FROM powersync.workspace_members WHERE workspace_id = bucket.workspace_id
+          - SELECT * FROM powersync.chat_threads
+              WHERE workspace_id = bucket.workspace_id
+              AND user_id = request.user_id()
+          - SELECT * FROM powersync.chat_messages
+              WHERE workspace_id = bucket.workspace_id
+              AND user_id = request.user_id()
+          - SELECT * FROM powersync.tasks
+              WHERE workspace_id = bucket.workspace_id
+              AND user_id = request.user_id()
+          - SELECT * FROM powersync.models WHERE workspace_id = bucket.workspace_id
+          - SELECT * FROM powersync.modes WHERE workspace_id = bucket.workspace_id
+          - SELECT * FROM powersync.prompts WHERE workspace_id = bucket.workspace_id
+          - SELECT * FROM powersync.model_profiles WHERE workspace_id = bucket.workspace_id
+          - SELECT * FROM powersync.mcp_servers WHERE workspace_id = bucket.workspace_id
+          - SELECT * FROM powersync.triggers WHERE workspace_id = bucket.workspace_id
+
+      # Admin-only workspace data — one bucket instance per workspace where the user is owner/admin.
+      # Demoting a user to 'member' drops the bucket and purges pending_memberships from their device.
+      workspace_admin_data:
+        parameters: |
+          SELECT wm.workspace_id
+          FROM powersync.workspace_members wm
+          WHERE wm.user_id = request.user_id()
+            AND wm.removed_at IS NULL
+            AND wm.role IN ('owner', 'admin')
+        data:
+          - SELECT * FROM powersync.pending_memberships WHERE workspace_id = bucket.workspace_id
 
 client_auth:
   supabase: false
