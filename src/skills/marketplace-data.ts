@@ -4,20 +4,23 @@
 
 import type { Skill } from './skills-data'
 
+export type MarketplaceCategory = 'skills' | 'integrations' | 'mcp' | 'models' | 'agents' | 'widget' | 'extensions'
+
 export type Card = {
   name: string
+  category: MarketplaceCategory
   author: string
-  downloads: string
+  downloads: number
   description: string
   instruction: string
-  installed: boolean
 }
 
 export const cards: Card[] = [
   {
     name: '/tast-triage',
+    category: 'skills',
     author: 'Henry Caldwell',
-    downloads: '412,738',
+    downloads: 412738,
     description:
       'Use this skill when the user dumps a list of tasks, a backlog, or a to-do brain-dump and wants help prioritizing. Triggers include "what should I work on first," "help me triage this list," "I have too much going on," or "rank these by priority." Do not use for project planning across multiple weeks or for one-off task creation.',
     instruction: `Help the user sort their list using a priority and effort frame. Stay decisive; do not produce a long analysis.
@@ -29,12 +32,12 @@ export const cards: Card[] = [
 3. CALL OUT — name the top 1-3 items the user should do today, and any items that look like they should be dropped or delegated.
 
 Do not produce sub-tasks unless asked.`,
-    installed: true,
   },
   {
     name: '/product-design',
+    category: 'skills',
     author: 'Mozilla',
-    downloads: '1,356,790',
+    downloads: 1356790,
     description:
       'Designing end-to-end user experiences, from understanding user problems and researching user solutions to delivering polished, production-ready interfaces that ship.',
     instruction: `Walk the user through a product design pass in five steps. Don't combine steps; one clean pass per step.
@@ -50,12 +53,12 @@ Do not produce sub-tasks unless asked.`,
 5. NEXT. Identify the smallest version that can be tested with users this week.
 
 End with a one-paragraph summary the user can share with the team.`,
-    installed: true,
   },
   {
     name: '/ui-design',
+    category: 'skills',
     author: 'Eleanor Whitfield',
-    downloads: '678,902',
+    downloads: 678902,
     description:
       'Crafting clean, intuitive interfaces with careful attention to spacing, hierarchy, and visual detail so every screen feels considered and easy to use.',
     instruction: `Critique or design a UI in four passes. Be concrete. Reference pixels, tokens, and components, not vibes.
@@ -69,12 +72,12 @@ End with a one-paragraph summary the user can share with the team.`,
 4. EDGE CASES. Cover empty, loading, error, and overflow states for every key element.
 
 End with a prioritized list of changes, ordered by impact on usability.`,
-    installed: true,
   },
   {
     name: '/product-strategy',
+    category: 'skills',
     author: 'Marcus Chen',
-    downloads: '232,639',
+    downloads: 232639,
     description:
       'Defining product direction by aligning user needs, business goals, and technical feasibility, then translating that vision into a roadmap that delivers measurable impact over time.',
     instruction: `Build or stress-test a product strategy in four passes.
@@ -88,12 +91,12 @@ End with a prioritized list of changes, ordered by impact on usability.`,
 4. BETS. List the three to five bets the roadmap is making, ordered by leverage. For each bet, name what would make it fail.
 
 End with a single paragraph the leadership team could read aloud and agree to.`,
-    installed: true,
   },
   {
     name: '/go-to-market',
+    category: 'skills',
     author: 'Sofia Almeida',
-    downloads: '96,541',
+    downloads: 96541,
     description:
       'Partnering with marketing, sales, and leadership to plan and execute product launches, ensuring the right messaging, positioning, and rollout strategy reach the target audience.',
     instruction: `Plan a go-to-market motion in five passes.
@@ -109,12 +112,12 @@ End with a single paragraph the leadership team could read aloud and agree to.`,
 5. SEQUENCE. Lay out a four-week launch arc: tease, launch, amplify, follow up. Name the owner for each phase.
 
 End with a checklist of artifacts to produce before launch day.`,
-    installed: false,
   },
   {
     name: '/growth',
+    category: 'skills',
     author: 'James Holloway',
-    downloads: '891,427',
+    downloads: 891427,
     description:
       'Identifying opportunities to drive acquisition, activation, and retention through data-informed experiments, optimizing funnels and product surfaces to move the metrics that matter most.',
     instruction: `Run a growth diagnostic in four passes.
@@ -128,12 +131,12 @@ End with a checklist of artifacts to produce before launch day.`,
 4. PLAN. Pick the top two to run this cycle. Define the metric, the duration, and the decision rule for each.
 
 End with a one-paragraph summary of the bet and how you'll know it worked.`,
-    installed: false,
   },
   {
     name: '/metrics-and-analytics',
+    category: 'skills',
     author: 'Priya Raman',
-    downloads: '29,612',
+    downloads: 29612,
     description:
       'Defining KPIs, tracking user behavior, and using data to validate hypotheses, measure success, and inform decisions rather than relying on intuition alone.',
     instruction: `Set up a measurement pass in four steps.
@@ -147,12 +150,12 @@ End with a one-paragraph summary of the bet and how you'll know it worked.`,
 4. THRESHOLDS. Pre-commit to what counts as a win, a flat result, and a regression before you see the data.
 
 End with a one-paragraph plan, including who owns the dashboard and the review cadence.`,
-    installed: false,
   },
   {
     name: '/a-b-testing',
+    category: 'skills',
     author: 'Oliver Bennett',
-    downloads: '203,856',
+    downloads: 203856,
     description:
       'Designing and running experiments to test ideas with real users, interpreting results carefully, and using findings to ship the version that genuinely performs better.',
     instruction: `Design an A/B test in five steps. Resist shipping before the data is in.
@@ -168,12 +171,12 @@ End with a one-paragraph plan, including who owns the dashboard and the review c
 5. DECISION RULE. Decide before launch what result will ship, kill, or iterate.
 
 End with a one-paragraph test plan that the analyst and the engineer can both work from.`,
-    installed: false,
   },
   {
     name: '/customer-discovery',
+    category: 'skills',
     author: 'Clara Voss',
-    downloads: '2,156',
+    downloads: 2156,
     description:
       'Talking to users and prospects to understand their problems, jobs to be done, and willingness to pay, ensuring the product solves real pain points worth paying for.',
     instruction: `Run a customer discovery interview prep in four passes.
@@ -187,12 +190,12 @@ End with a one-paragraph test plan that the analyst and the engineer can both wo
 4. SIGNALS. Decide ahead of time what you'd hear that would confirm or refute your assumption.
 
 End with a one-paragraph debrief template the user can fill in after each interview.`,
-    installed: false,
   },
   {
     name: '/market-research',
+    category: 'skills',
     author: 'Daniel Okafor',
-    downloads: '389,155',
+    downloads: 389155,
     description:
       'Studying competitors, industry trends, and market gaps to identify opportunities, sharpen positioning, and make informed bets on where to invest product effort.',
     instruction: `Produce a market scan in four passes.
@@ -206,12 +209,12 @@ End with a one-paragraph debrief template the user can fill in after each interv
 4. GAP. Point to the unserved or under-served job that the user could credibly claim.
 
 End with a one-paragraph thesis on where to play and how to win.`,
-    installed: false,
   },
   {
     name: '/stakeholder-management',
+    category: 'skills',
     author: 'Isabel Moreno',
-    downloads: '18,475',
+    downloads: 18475,
     description:
       'Communicating with founders, executives, investors, and cross-functional partners, building alignment around priorities and keeping everyone informed on progress and tradeoffs.',
     instruction: `Prep a stakeholder communication in four passes.
@@ -225,12 +228,12 @@ End with a one-paragraph thesis on where to play and how to win.`,
 4. FORMAT. Match the channel to the urgency and complexity. Memo for nuanced, Slack for simple, meeting only if discussion is required.
 
 End with a one-paragraph draft they can read in under 60 seconds.`,
-    installed: false,
   },
   {
     name: '/prioritization',
+    category: 'skills',
     author: 'Henry Caldwell',
-    downloads: '1,024,583',
+    downloads: 1024583,
     description:
       'Ranking opportunities and features based on impact, effort, and strategic fit, saying no to good ideas so the team can focus on the great ones that move the business forward.',
     instruction: `Prioritize a backlog in four passes.
@@ -244,12 +247,12 @@ End with a one-paragraph draft they can read in under 60 seconds.`,
 4. CUT. Move at least 30% of the backlog to "not now." Be visible about the cut so the team trusts the prioritization.
 
 End with a paragraph that explains the chosen top three and what was deliberately deprioritized.`,
-    installed: false,
   },
   {
     name: '/meeting-notes',
+    category: 'skills',
     author: 'Yuki Tanaka',
-    downloads: '267,431',
+    downloads: 267431,
     description:
       "Capturing what actually happened in a meeting, separating decisions from discussion, and producing notes that travel well to people who weren't in the room.",
     instruction: `Turn a meeting transcript or rough notes into structured notes in four passes.
@@ -263,11 +266,17 @@ End with a paragraph that explains the chosen top three and what was deliberatel
 4. OPEN QUESTIONS. List anything unresolved that needs a follow-up, with a name attached.
 
 End with a TL;DR of three to five bullets that someone who skipped the meeting can absorb in 30 seconds.`,
-    installed: false,
   },
 ]
 
-export const defaultInstalledNames = new Set(cards.filter((c) => c.installed).map((c) => c.name))
+// Seed install state for the visual shell. Backend will replace this with a
+// per-user fetch (install state belongs to the user, not the listing).
+export const defaultInstalledNames = new Set<string>([
+  '/tast-triage',
+  '/product-design',
+  '/ui-design',
+  '/product-strategy',
+])
 
 export const cardToSkill = (card: Card): Skill => ({
   name: card.name,

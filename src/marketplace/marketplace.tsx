@@ -184,7 +184,7 @@ const SkillTile = ({
       </span>
       <span className="flex items-center gap-1 whitespace-nowrap">
         <Download size={14} strokeWidth={1.75} />
-        {card.downloads}
+        {card.downloads.toLocaleString()}
       </span>
     </div>
     <p className="mt-2 line-clamp-3 text-base leading-snug text-foreground/85">{card.description}</p>
@@ -234,7 +234,7 @@ const SkillPreview = ({
         </span>
         <span className="flex items-center gap-1 whitespace-nowrap">
           <Download className="size-5 md:size-3.5" strokeWidth={1.75} />
-          {card.downloads}
+          {card.downloads.toLocaleString()}
         </span>
       </div>
     </header>
@@ -442,6 +442,7 @@ export const Marketplace = () => {
             <h1 className="absolute left-1/2 -translate-x-1/2 text-xl leading-tight text-foreground">Marketplace</h1>
           </header>
 
+          {/* Category tabs are visual-only pending backend filter endpoint — selecting a tab does not filter `visible`. */}
           <div className="mt-4 flex flex-col">
             <nav className="-mr-4 flex items-center gap-1 overflow-x-auto pb-2 md:mr-0 [&::-webkit-scrollbar]:hidden [scrollbar-width:none]">
               {categories.map((c) => (
@@ -458,6 +459,7 @@ export const Marketplace = () => {
           </div>
 
           <div className="mt-2 flex items-center gap-3">
+            {/* Search input is visual-only pending backend filter endpoint — typing does not filter `visible`. */}
             <div className="relative flex-1">
               <Search className="absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
