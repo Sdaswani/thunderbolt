@@ -202,7 +202,7 @@ const SkillPreview = ({
   onToggleInstall: (name: string) => void
   onClose: () => void
 }) => (
-  <div className="flex h-full flex-col gap-4 overflow-hidden bg-background px-4 py-4 md:px-6 text-foreground dark:bg-sidebar">
+  <div className="flex h-full flex-col gap-4 overflow-hidden bg-background px-4 py-4 md:px-6 text-foreground">
     <header className="flex flex-col gap-4 md:gap-2">
       <div className="relative flex h-9 items-center">
         <Button
@@ -259,7 +259,7 @@ const SkillPreview = ({
       defaultValue={['description', 'instructions']}
       className="flex min-h-0 flex-1 flex-col gap-4"
     >
-      <AccordionItem value="description" className="rounded-xl border-b-0 bg-secondary px-4">
+      <AccordionItem value="description" className="rounded-xl border-b-0 bg-secondary px-4 dark:bg-sidebar">
         <AccordionTrigger className="py-3 text-sm leading-tight text-muted-foreground hover:no-underline">
           <div className="flex items-center gap-0.5">
             <span>Description</span>
@@ -290,7 +290,7 @@ const SkillPreview = ({
           sizing, so this item snaps open/closed without animation. */}
       <AccordionPrimitive.Item
         value="instructions"
-        className="flex flex-col rounded-xl bg-secondary px-4 data-[state=open]:min-h-0 data-[state=open]:flex-1"
+        className="flex flex-col rounded-xl bg-secondary px-4 data-[state=open]:min-h-0 data-[state=open]:flex-1 dark:bg-sidebar"
       >
         <AccordionPrimitive.Header className="flex">
           <AccordionPrimitive.Trigger className="flex flex-1 items-center justify-between gap-4 py-3 text-sm leading-tight text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&[data-state=open]>svg]:rotate-180">
@@ -398,7 +398,7 @@ export const Marketplace = () => {
           {selected && (
             <motion.div
               key="mobile-preview"
-              className="absolute inset-0 z-10 flex h-full w-full flex-col overflow-y-auto bg-background dark:bg-sidebar"
+              className="absolute inset-0 z-10 flex h-full w-full flex-col overflow-y-auto bg-background"
               initial={{ x: '100%' }}
               animate={{ x: 0 }}
               exit={{ x: '100%' }}

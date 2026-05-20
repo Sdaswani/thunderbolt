@@ -239,7 +239,7 @@ export const SkillDetail = ({
         defaultValue={['description', 'instructions']}
         className="mt-2 flex min-h-0 flex-1 flex-col gap-4"
       >
-        <AccordionItem value="description" className="rounded-xl border-b-0 bg-secondary px-4">
+        <AccordionItem value="description" className="rounded-xl border-b-0 bg-secondary px-4 dark:bg-sidebar">
           <AccordionTrigger className="py-3 text-base leading-tight text-muted-foreground hover:no-underline">
             <div className="flex items-center gap-0.5">
               <span>Description</span>
@@ -274,7 +274,7 @@ export const SkillDetail = ({
             sizing, so this item snaps open/closed without animation. */}
         <AccordionPrimitive.Item
           value="instructions"
-          className="flex flex-col rounded-xl bg-secondary px-4 data-[state=open]:min-h-0 data-[state=open]:flex-1"
+          className="flex flex-col rounded-xl bg-secondary px-4 data-[state=open]:min-h-0 data-[state=open]:flex-1 dark:bg-sidebar"
         >
           <AccordionPrimitive.Header className="flex">
             <AccordionPrimitive.Trigger className="flex flex-1 items-center justify-between gap-4 py-3 text-base leading-tight text-muted-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 [&[data-state=open]>svg]:rotate-180">
