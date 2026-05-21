@@ -68,10 +68,6 @@ src-tauri/gen/apple/.bundle/
 test-results/
 playwright-report/
 blob-report/
-.playwright-mcp/
-
-# Local screenshots from browser automation
-/*.png
 
 # Powersync
 public/@powersync/**
