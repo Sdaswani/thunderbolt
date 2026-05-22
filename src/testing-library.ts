@@ -157,12 +157,12 @@ export const useRealTimers = (): void => {
     try {
       globalClock.reset()
     } catch {
-      /* see afterEach */
+      // ignore
     }
     try {
       globalClock.uninstall()
     } catch {
-      /* see afterEach */
+      // ignore
     }
     globalClock = null
   }
