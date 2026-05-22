@@ -14,7 +14,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock 
 import { LogoutModal } from './logout-modal'
 
 const mockClearLocalData = mock(() => Promise.resolve())
-const mockIsSsoMode = mock(() => false)
+// Default delegates to the real env check. `mock.module` in Bun is process-global
+// and cannot be un-mocked, so this module mock leaks to any subsequent test in
+// the run. Defaulting to env-based behavior (and restoring it in afterAll, below)
+// prevents that leak from breaking tests like `use-auth-gate` that mutate
+// `import.meta.env.VITE_AUTH_MODE` and expect `isSsoMode()` to follow.
+const realIsSsoMode = () => import.meta.env.VITE_AUTH_MODE === 'sso'
+const mockIsSsoMode = mock(realIsSsoMode)
 
 mock.module('@/lib/cleanup', () => ({
   clearLocalData: mockClearLocalData,
@@ -24,12 +30,16 @@ mock.module('@/lib/auth-mode', () => ({
   isSsoMode: mockIsSsoMode,
 }))
 
-// Mock window.location
+// Mock window.location. The original is captured so afterAll can restore it —
+// otherwise subsequent test files that spy on `window.location.reload` (e.g.
+// `auth-context` cross-tab listener tests) see this fake location and fail.
+const originalLocation = window.location
 const mockReload = mock()
 const mockReplace = mock()
 Object.defineProperty(window, 'location', {
   value: { reload: mockReload, replace: mockReplace },
   writable: true,
+  configurable: true,
 })
 
 describe('LogoutModal', () => {
@@ -44,6 +54,14 @@ describe('LogoutModal', () => {
 
   afterAll(async () => {
     consoleSpies.restore()
+    // Restore the mock to the env-based default so later test files that
+    // mutate VITE_AUTH_MODE see correct `isSsoMode()` behavior.
+    mockIsSsoMode.mockImplementation(realIsSsoMode)
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+      configurable: true,
+    })
     await teardownTestDatabase()
   })
 

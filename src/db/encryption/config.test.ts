@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { afterEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import { useConfigStore } from '@/api/config-store'
 
 // Other test files mock the @/db/encryption barrel with isEncryptionEnabled: () => true.
@@ -26,6 +26,13 @@ mock.module('@/db/encryption', () => ({
 import { isEncryptionEnabled } from './config'
 
 describe('encryption config', () => {
+  // Reset before each test too: another test file may have populated the
+  // (process-global) zustand store before this file runs, and the first test
+  // in this describe asserts the store starts empty.
+  beforeEach(() => {
+    useConfigStore.setState({ config: {} })
+  })
+
   afterEach(() => {
     useConfigStore.setState({ config: {} })
   })

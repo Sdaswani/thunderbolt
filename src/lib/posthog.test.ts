@@ -28,12 +28,21 @@ mock.module('posthog-js', () => ({
       // Always capture the options, even if PostHog client is cached
       capturedOptions = options as PosthogOptions
       const result = mockPosthogInit(...args)
-      // Return a mock client with captureException method
+      // Return a mock client with the methods used by callers. Include `capture`
+      // and `identify` because `mock.module` is process-global in Bun and this
+      // module mock leaks to subsequent test files. If a downstream test causes
+      // posthog.init() to be called and the returned client is missing `capture`,
+      // `trackEvent` throws and logs `console.error('Failed to track event:', ...)`,
+      // which then trips tests that assert console.error wasn't called.
       return {
         ...result,
+        capture: () => {},
+        identify: () => {},
         captureException: mockCaptureException,
       }
     },
+    capture: () => {},
+    identify: () => {},
     captureException: mockCaptureException,
   },
 }))

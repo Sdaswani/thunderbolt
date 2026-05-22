@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test'
 import {
   clearAuthToken,
   clearDeviceId,
@@ -45,6 +45,15 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  clearAuthToken()
+  clearDeviceId()
+})
+
+afterAll(() => {
+  // localStorage is process-global; leaving a token here causes later test
+  // files' `AuthProvider` to fire an extra `api/auth/get-session` fetch (see
+  // `auth-context.tsx`), which trips call-count assertions in tests like
+  // `sign-in-modal.test`.
   clearAuthToken()
   clearDeviceId()
 })

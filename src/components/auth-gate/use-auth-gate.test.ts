@@ -112,6 +112,15 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  // Reset to neutral defaults — `mock.module('@/lib/auth-mode', ...)` is
+  // process-global in Bun and outlives this file, so any flag left at `true`
+  // would change `isSsoMode()` / `isAnonymousAuthEnabled()` / `isWaitlistBypassed()`
+  // for every subsequent test file (e.g. the connector test's
+  // `fetchCredentials returns null when no auth token` proceeds with a fetch
+  // if SSO mode is on, even with no token).
+  mockSsoMode = false
+  mockAnonymousEnabled = false
+  mockWaitlistBypassed = false
   await teardownTestDatabase()
 })
 

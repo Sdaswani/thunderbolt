@@ -17,6 +17,17 @@ import { type Clock, install } from '@sinonjs/fake-timers'
  * clock.uninstall()
  */
 export const installFakeTimers = (config?: { now?: number; shouldAdvanceTime?: boolean }): Clock => {
+  // If a previous test's afterEach failed to uninstall (e.g. a hook hung and timed
+  // out), Date will still be faked here. Restore the real clock first so install()
+  // doesn't throw "Can't install fake timers twice" — which would otherwise cascade
+  // every subsequent test in the file to fail with the same error.
+  // @ts-expect-error - isFake is set by @sinonjs/fake-timers on the patched Date
+  if (globalThis.Date?.isFake === true) {
+    // @ts-expect-error - clock is attached as Date.clock when fake timers are installed
+    const existing = globalThis.Date.clock as Clock | undefined
+    existing?.uninstall()
+  }
+
   const clock = install({
     now: config?.now ?? Date.now(),
     shouldAdvanceTime: config?.shouldAdvanceTime ?? false,

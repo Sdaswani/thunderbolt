@@ -136,6 +136,12 @@ describe('ThunderboltConnector', () => {
   afterEach(() => {
     ;(import.meta.env as Record<string, unknown>).VITE_AUTH_MODE = savedAuthMode
     dispatchSpy.mockRestore()
+    // Several tests in this describe call `setAuthToken` and don't clean up;
+    // the token persists in `localStorage` and is picked up by `AuthProvider`
+    // in later test files, which then fires an extra `api/auth/get-session`
+    // fetch through any mocked http client and trips call-count assertions
+    // (e.g. in `sign-in-modal.test`).
+    clearAuthToken()
   })
 
   it('fetchCredentials returns null when no auth token', async () => {
