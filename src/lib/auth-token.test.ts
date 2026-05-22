@@ -2,7 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { beforeEach, describe, expect, it, mock } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test'
 import {
   clearAuthToken,
   clearDeviceId,
@@ -26,12 +26,15 @@ const authTokenKey = 'thunderbolt_auth_token'
  * doesn't fire it). Calling the captured handler directly tests the same
  * impl logic without depending on the unreliable host-environment plumbing.
  */
-let originalAddEventListener: typeof window.addEventListener
 let capturedStorageHandler: ((event: StorageEvent) => void) | null = null
+let restoreAddEventListener: (() => void) | null = null
 
 const fireStorageEvent = (newValue: string | null, oldValue: string | null, key = authTokenKey) => {
+  // No-op when no handler is currently registered. Matches the original
+  // dispatchEvent behavior: firing into a window with no listener attached
+  // is silent (e.g. the "stops firing after unsubscribe" test).
   if (!capturedStorageHandler) {
-    throw new Error('No storage handler captured — was onAuthTokenChangedInOtherTab called?')
+    return
   }
   capturedStorageHandler({
     key,
@@ -43,8 +46,14 @@ const fireStorageEvent = (newValue: string | null, oldValue: string | null, key 
 
 beforeEach(() => {
   capturedStorageHandler = null
-  originalAddEventListener = window.addEventListener
-  window.addEventListener = ((
+  // Capture originals as consts inside this scope so each wrapper's closure
+  // binds to *this* call's values. A module-level `let` would mutate under
+  // the wrapper's feet on subsequent beforeEach runs and make the wrapper
+  // call itself (infinite recursion under --rerun-each).
+  const originalAddEventListener = window.addEventListener
+  const originalRemoveEventListener = window.removeEventListener
+
+  const addWrapper = ((
     event: string,
     listener: EventListenerOrEventListenerObject,
     options?: boolean | AddEventListenerOptions,
@@ -54,8 +63,36 @@ beforeEach(() => {
     }
     return originalAddEventListener.call(window, event, listener, options)
   }) as typeof window.addEventListener
+
+  const removeWrapper = ((
+    event: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: boolean | EventListenerOptions,
+  ) => {
+    if (event === 'storage' && capturedStorageHandler === listener) {
+      capturedStorageHandler = null
+    }
+    return originalRemoveEventListener.call(window, event, listener, options)
+  }) as typeof window.removeEventListener
+
+  window.addEventListener = addWrapper
+  window.removeEventListener = removeWrapper
+  restoreAddEventListener = () => {
+    if (window.addEventListener === addWrapper) {
+      window.addEventListener = originalAddEventListener
+    }
+    if (window.removeEventListener === removeWrapper) {
+      window.removeEventListener = originalRemoveEventListener
+    }
+  }
   clearAuthToken()
   clearDeviceId()
+})
+
+afterEach(() => {
+  restoreAddEventListener?.()
+  restoreAddEventListener = null
+  capturedStorageHandler = null
 })
 
 describe('auth-token', () => {
