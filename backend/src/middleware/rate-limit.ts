@@ -35,14 +35,18 @@ const tierConfigs: Record<RateLimitTier, RateLimitTierConfig> = {
   auth: { max: 10, durationSecs: 60 },
 }
 
-/** Create a rate-limiter-flexible instance for a specific tier. */
-const createLimiter = (database: typeof DbType, tier: RateLimitTier) => {
+/** Create a rate-limiter-flexible instance for a specific tier.
+ *  `maxPointsOverride` lets tests use a tiny limit so they exercise the
+ *  429-on-exceed path in a handful of requests instead of hammering the real
+ *  hardcoded limit (60–100) hundreds of times — that volume of serialized
+ *  PGlite upserts could stall the shared test connection on CI. */
+const createLimiter = (database: typeof DbType, tier: RateLimitTier, maxPointsOverride?: number) => {
   const config = tierConfigs[tier]
   return new RateLimiterDrizzle({
     storeClient: database,
     schema: rateLimits,
     keyPrefix: tier,
-    points: config.max,
+    points: maxPointsOverride ?? config.max,
     duration: config.durationSecs,
     // The expiry sweep arms a recurring, self-re-arming `setTimeout` that
     // issues its own `DELETE FROM rate_limits` outside any caller transaction.
@@ -134,21 +138,31 @@ const createIpRateLimitMiddleware = (limiter: RateLimiterDrizzle, trustedProxy: 
     })
     .as('scoped')
 
-/** Create rate limit middleware for inference routes (keyed by user). */
-export const createInferenceRateLimit = (database: typeof DbType, settings: RateLimitSettings) => {
+/** Create rate limit middleware for inference routes (keyed by user).
+ *  `maxPointsOverride` is for tests only — production passes nothing. */
+export const createInferenceRateLimit = (
+  database: typeof DbType,
+  settings: RateLimitSettings,
+  maxPointsOverride?: number,
+) => {
   if (!settings.enabled) {
     return new Elysia()
   }
-  const limiter = createLimiter(database, 'inference')
+  const limiter = createLimiter(database, 'inference', maxPointsOverride)
   return createUserRateLimitMiddleware(limiter)
 }
 
-/** Create rate limit middleware for pro tool routes (keyed by user). */
-export const createProRateLimit = (database: typeof DbType, settings: RateLimitSettings) => {
+/** Create rate limit middleware for pro tool routes (keyed by user).
+ *  `maxPointsOverride` is for tests only — production passes nothing. */
+export const createProRateLimit = (
+  database: typeof DbType,
+  settings: RateLimitSettings,
+  maxPointsOverride?: number,
+) => {
   if (!settings.enabled) {
     return new Elysia()
   }
-  const limiter = createLimiter(database, 'pro')
+  const limiter = createLimiter(database, 'pro', maxPointsOverride)
   return createUserRateLimitMiddleware(limiter)
 }
 

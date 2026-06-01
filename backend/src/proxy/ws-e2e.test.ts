@@ -169,16 +169,16 @@ describe('Universal proxy WebSocket relay /v1/proxy/ws — e2e', () => {
     client.send('hello')
     // Poll for the echo rather than a fixed setTimeout — under CI load the
     // round-trip (client → proxy → upstream → proxy → client) can routinely
-    // exceed 100ms. Cap at 3s so failures still hit the framework timeout
-    // budget if something is genuinely wrong.
+    // exceed 100ms. Budget 10s against the 20s per-test timeout below so a slow
+    // 2-core CI runner has ample headroom while a genuine hang still fails.
     let bidiPolls = 0
-    while (!messages.includes('echo: hello') && bidiPolls < 60) {
+    while (!messages.includes('echo: hello') && bidiPolls < 200) {
       await new Promise((r) => setTimeout(r, 50))
       bidiPolls++
     }
     expect(messages).toContain('echo: hello')
     client.close()
-  })
+  }, 20_000)
 
   it('upstream close code propagates through the relay (server-side observation)', async () => {
     // We observe the close on the proxy's relay (where the upstream connection
@@ -211,12 +211,13 @@ describe('Universal proxy WebSocket relay /v1/proxy/ws — e2e', () => {
     // surface late-binding events on the downstream client, so we observe at
     // the upstream connection (where the proxy's relay sits) instead.
     //
-    // Budget is 4.5s (90 × 50ms): the prior 2.5s ceiling failed reliably on
-    // CI runners under concurrent test load even though the upstream close
-    // had clearly already happened. 4.5s leaves a 500ms cushion before the
-    // framework's 5s --timeout, so a genuine hang still fails fast.
+    // Budget 12s (240 × 50ms) against the 20s per-test timeout below. A 4.5s
+    // ceiling under the default 5s --timeout failed on a slow 2-core CI runner
+    // where the upstream close had clearly happened but landed at ~4.6s. The
+    // wider budget + raised timeout give CI headroom while a genuine hang still
+    // fails well before the test timeout.
     let polls = 0
-    while (observed.code === null && polls < 90) {
+    while (observed.code === null && polls < 240) {
       await new Promise((r) => setTimeout(r, 50))
       polls++
     }
@@ -226,7 +227,7 @@ describe('Universal proxy WebSocket relay /v1/proxy/ws — e2e', () => {
     } catch {
       /* may already be closed */
     }
-  })
+  }, 20_000)
 
   it('rejects upgrade with HTTP 400 when subprotocol is missing tbproxy.target.*', async () => {
     const upstream = await startUpstreamServer()

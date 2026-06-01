@@ -23,13 +23,27 @@ import {
 const createTestApp = (
   database: typeof DbType,
   settings: RateLimitSettings,
-  middleware: (db: typeof DbType, s: RateLimitSettings) => ReturnType<typeof createInferenceRateLimit>,
+  middleware: (
+    db: typeof DbType,
+    s: RateLimitSettings,
+    maxPointsOverride?: number,
+  ) => ReturnType<typeof createInferenceRateLimit>,
   userId?: string,
+  maxPointsOverride?: number,
 ) =>
   new Elysia()
     .derive(() => ({ user: userId ? { id: userId } : null }))
-    .use(middleware(database, settings))
+    .use(middleware(database, settings, maxPointsOverride))
     .get('/v1/test', () => ({ ok: true }))
+
+/**
+ * Small limit for the "exceed the limit" tests. Hitting the real hardcoded
+ * limits (60–100) means 60–100 serialized PGlite upserts per test ×5 reruns,
+ * which can stall the shared in-memory test connection on a constrained CI
+ * runner (observed: a 158s hang). A tiny limit exercises the identical
+ * 429-on-exceed code path in a handful of requests.
+ */
+const testLimit = 5
 
 /** Helper that creates a test app with IP-based rate limiting (trustedProxy=cloudflare). */
 const createIpTestApp = (database: typeof DbType, settings: IpRateLimitSettings) =>
@@ -69,9 +83,9 @@ describe('Rate Limiting', () => {
     })
 
     it('should return 429 after an authenticated user exceeds the limit', async () => {
-      const app = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-2')
+      const app = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-2', testLimit)
 
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < testLimit; i++) {
         await app.handle(new Request('http://localhost/v1/test'))
       }
 
@@ -93,9 +107,9 @@ describe('Rate Limiting', () => {
     })
 
     it('should set Retry-After header on 429 responses', async () => {
-      const app = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-4')
+      const app = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-4', testLimit)
 
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < testLimit; i++) {
         await app.handle(new Request('http://localhost/v1/test'))
       }
 
@@ -115,11 +129,11 @@ describe('Rate Limiting', () => {
     })
 
     it('should track limits independently per user', async () => {
-      const appA = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-5a')
-      const appB = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-5b')
+      const appA = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-5a', testLimit)
+      const appB = createTestApp(database, enabledSettings, createInferenceRateLimit, 'user-5b', testLimit)
 
       // Exhaust user A's limit
-      for (let i = 0; i < 60; i++) {
+      for (let i = 0; i < testLimit; i++) {
         await appA.handle(new Request('http://localhost/v1/test'))
       }
 
@@ -144,9 +158,9 @@ describe('Rate Limiting', () => {
     })
 
     it('should return 429 after exceeding the pro tier limit', async () => {
-      const app = createTestApp(database, enabledSettings, createProRateLimit, 'pro-user-2')
+      const app = createTestApp(database, enabledSettings, createProRateLimit, 'pro-user-2', testLimit)
 
-      for (let i = 0; i < 100; i++) {
+      for (let i = 0; i < testLimit; i++) {
         await app.handle(new Request('http://localhost/v1/test'))
       }
 
@@ -158,11 +172,11 @@ describe('Rate Limiting', () => {
     })
 
     it('should track limits independently from inference tier', async () => {
-      const inferenceApp = createTestApp(database, enabledSettings, createInferenceRateLimit, 'shared-user')
-      const proApp = createTestApp(database, enabledSettings, createProRateLimit, 'shared-user')
+      const inferenceApp = createTestApp(database, enabledSettings, createInferenceRateLimit, 'shared-user', testLimit)
+      const proApp = createTestApp(database, enabledSettings, createProRateLimit, 'shared-user', testLimit)
 
-      // Exhaust inference limit (60 requests)
-      for (let i = 0; i < 60; i++) {
+      // Exhaust inference limit
+      for (let i = 0; i < testLimit; i++) {
         await inferenceApp.handle(new Request('http://localhost/v1/test'))
       }
       const blockedInference = await inferenceApp.handle(new Request('http://localhost/v1/test'))
