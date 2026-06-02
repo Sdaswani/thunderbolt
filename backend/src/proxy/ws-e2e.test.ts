@@ -156,7 +156,9 @@ describe('Universal proxy WebSocket relay /v1/proxy/ws — e2e', () => {
     // The per-test timeout below is only a failsafe for a genuine hang.
     const echoed = new Promise<string>((resolve) => {
       client.onmessage = (e: MessageEvent) => {
-        if (e.data === 'echo: hello') resolve(e.data as string)
+        if (e.data === 'echo: hello') {
+          resolve(e.data as string)
+        }
       }
     })
 
