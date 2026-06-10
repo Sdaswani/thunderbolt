@@ -9,10 +9,16 @@ const makeFakeUpstream = () => {
   const listeners: Record<string, ((event: { data?: unknown; code?: number; reason?: string }) => void)[]> = {}
   const sent: string[] = []
   let closedWith: { code?: number; reason?: string } | null = null
+  let throwOnSend = false
 
   const sock: UpstreamSocket = {
     readyState: 0, // CONNECTING
-    send: (data) => sent.push(data),
+    send: (data) => {
+      if (throwOnSend) {
+        throw new Error('send failed')
+      }
+      sent.push(data)
+    },
     close: (code, reason) => {
       closedWith = { code, reason }
     },
@@ -20,8 +26,6 @@ const makeFakeUpstream = () => {
       ;(listeners[type] ??= []).push(listener)
     },
   }
-  const emit = (type: string, event: { data?: unknown; code?: number; reason?: string } = {}) =>
-    (listeners[type] ?? []).forEach((l) => l(event))
 
   return {
     sock,
@@ -29,25 +33,41 @@ const makeFakeUpstream = () => {
     get closedWith() {
       return closedWith
     },
-    emit,
+    setThrowOnSend: (v: boolean) => {
+      throwOnSend = v
+    },
+    emit: (type: string, event: { data?: unknown; code?: number; reason?: string } = {}) =>
+      (listeners[type] ?? []).forEach((l) => l(event)),
     open: () => {
       sock.readyState = 1
-      emit('open')
+      ;(listeners.open ?? []).forEach((l) => l({}))
     },
   }
 }
 
-const makeProxy = () => {
+const makeProxy = (opts: { queueMessages?: number; queueBytes?: number } = {}) => {
   const up = makeFakeUpstream()
   const toClient: string[] = []
   const closes: { code: number; reason: string }[] = []
+  const logs: { event: string; detail: Record<string, unknown> }[] = []
+  let timerFn: (() => void) | null = null
   const proxy = new CodingAgentProxy({
     send: (d) => toClient.push(d),
-    onUpstreamClose: (code, reason) => closes.push({ code, reason }),
+    onClose: (code, reason) => closes.push({ code, reason }),
+    onLog: (event, detail) => logs.push({ event, detail }),
     upstreamUrl: 'wss://workspace.example/?token=x',
     createUpstream: () => up.sock,
+    queueMessages: opts.queueMessages,
+    queueBytes: opts.queueBytes,
+    setTimer: (fn) => {
+      timerFn = fn
+      return 1
+    },
+    clearTimer: () => {
+      timerFn = null
+    },
   })
-  return { proxy, up, toClient, closes }
+  return { proxy, up, toClient, closes, logs, fireTimer: () => timerFn?.(), hasTimer: () => timerFn !== null }
 }
 
 describe('CodingAgentProxy', () => {
@@ -55,8 +75,7 @@ describe('CodingAgentProxy', () => {
     const { proxy, up } = makeProxy()
     proxy.handleClientMessage('a')
     proxy.handleClientMessage('b')
-    expect(up.sent).toEqual([]) // not connected yet
-
+    expect(up.sent).toEqual([])
     up.open()
     expect(up.sent).toEqual(['a', 'b'])
   })
@@ -75,17 +94,91 @@ describe('CodingAgentProxy', () => {
     expect(toClient).toEqual(['from-agent'])
   })
 
-  it('reports upstream close/error to the route', () => {
+  it('stringifies non-string upstream messages', () => {
+    const { up, toClient } = makeProxy()
+    up.open()
+    up.emit('message', { data: { hello: 1 } })
+    expect(toClient).toEqual(['{"hello":1}'])
+  })
+
+  it('on upstream close, passes a sendable code with a GENERIC reason and logs the real one', () => {
+    const { up, closes, logs } = makeProxy()
+    up.emit('close', { code: 1011, reason: 'internal shim detail' })
+    expect(closes).toEqual([{ code: 1011, reason: 'upstream closed' }]) // reason NOT relayed verbatim
+    expect(logs.some((l) => l.detail.reason === 'internal shim detail')).toBe(true) // logged server-side
+  })
+
+  it('substitutes a reserved abnormal close code (1006) with 1011', () => {
     const { up, closes } = makeProxy()
-    up.emit('close', { code: 1006, reason: 'gone' })
-    expect(closes).toEqual([{ code: 1006, reason: 'gone' }])
+    up.emit('close', { code: 1006 })
+    expect(closes[0].code).toBe(1011)
+  })
+
+  it('defaults a missing upstream close code to 1011', () => {
+    const { up, closes } = makeProxy()
+    up.emit('close', {})
+    expect(closes).toEqual([{ code: 1011, reason: 'upstream closed' }])
+  })
+
+  it('on upstream error, closes the client 1011', () => {
+    const { up, closes } = makeProxy()
+    up.emit('error')
+    expect(closes).toEqual([{ code: 1011, reason: 'upstream error' }])
+  })
+
+  it('arms a connect timer and clears it on open', () => {
+    const { up, hasTimer } = makeProxy()
+    expect(hasTimer()).toBe(true)
+    up.open()
+    expect(hasTimer()).toBe(false)
+  })
+
+  it('connect timeout tears down with 1011 when the upstream never opens', () => {
+    const { up, closes, fireTimer } = makeProxy()
+    fireTimer()
+    expect(closes).toEqual([{ code: 1011, reason: 'upstream unavailable' }])
+    expect(up.closedWith).not.toBeNull()
+  })
+
+  it('caps the pre-connect queue and overflows with 4008', () => {
+    const { proxy, up, closes } = makeProxy({ queueMessages: 2 })
+    proxy.handleClientMessage('a')
+    proxy.handleClientMessage('b')
+    proxy.handleClientMessage('c') // exceeds cap of 2
+    expect(closes).toEqual([{ code: 4008, reason: 'pre-connect queue overflow' }])
+    expect(up.closedWith).not.toBeNull()
   })
 
   it('dispose() closes the upstream and suppresses the close callback', () => {
     const { proxy, up, closes } = makeProxy()
     proxy.dispose()
     expect(up.closedWith).toEqual({ code: 1000, reason: 'client disconnected' })
-    up.emit('close', { code: 1000, reason: 'client disconnected' })
+    up.emit('close', { code: 1000 })
     expect(closes).toEqual([]) // suppressed after dispose
+  })
+
+  it('ignores client frames and upstream messages after dispose', () => {
+    const { proxy, up, toClient } = makeProxy()
+    up.open()
+    proxy.dispose()
+    proxy.handleClientMessage('x')
+    up.emit('message', { data: 'y' })
+    expect(up.sent).toEqual([])
+    expect(toClient).toEqual([])
+  })
+
+  it('open after dispose closes the upstream without flushing buffered frames', () => {
+    const { proxy, up } = makeProxy()
+    proxy.handleClientMessage('a')
+    proxy.dispose()
+    up.open()
+    expect(up.sent).toEqual([])
+  })
+
+  it('swallows an upstream send throw without crashing', () => {
+    const { proxy, up } = makeProxy()
+    up.open()
+    up.setThrowOnSend(true)
+    expect(() => proxy.handleClientMessage('x')).not.toThrow()
   })
 })

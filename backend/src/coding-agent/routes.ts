@@ -21,10 +21,20 @@ const wsCarrierSubprotocol = 'thunderbolt.v1'
 const wsCloseUnauthorized = 4001
 /** The developer has not connected GitHub — the UI should prompt `github_connect`. */
 const wsCloseGithubNotConnected = 4002
-/** Server-side problem: broker/workspace misconfigured or provisioning failed. */
+/** Provisioning failed (broker/workspace misconfigured, or the broker could not mint a token). */
 const wsCloseProvisionFailed = 4003
 
-type ProxySlot = { __codingAgentProxy?: CodingAgentProxy }
+/** Per-connection state stashed on `ws.data`; Elysia's WS context doesn't surface these. */
+type WsData = { request?: Request; proxy?: CodingAgentProxy; clientClosed?: boolean }
+const wsData = (ws: { data: unknown }): WsData => ws.data as WsData
+
+const safeWsClose = (ws: { close: (code?: number, reason?: string) => void }, code: number, reason: string): void => {
+  try {
+    ws.close(code, reason)
+  } catch {
+    // already closed
+  }
+}
 
 export type CodingAgentDeps = {
   fetchFn?: typeof fetch
@@ -39,19 +49,37 @@ export type CodingAgentDeps = {
  *  - Exposes `WS /v1/coding-agent/ws`: authenticate the developer, **provision
  *    their GitHub token via the broker**, then proxy ACP frames to the workspace
  *    shim. Auth + provisioning run in `open()` (Bun may call `beforeHandle` more
- *    than once per upgrade), exactly once per accepted socket.
+ *    than once per upgrade), exactly once per accepted socket, wrapped so a
+ *    broker/network failure closes the socket instead of leaking an unhandled
+ *    rejection (Elysia's HTTP `onError` does not cover WS lifecycle callbacks).
  *
- * Provisioning is the multi-user crux: the broker mints a user-to-server token
- * for *this* developer (identified by Better-Auth `user.id`) and injects it into
- * their workspace Secret before the session starts, so Cline commits/opens PRs as
- * them. When the broker isn't configured, the proxy still runs (the agent works
- * for read-only / no-push flows); a 409 from the broker closes 4002 so the UI can
- * prompt the developer to connect GitHub first.
+ * Provisioning is the multi-user crux: when the broker is configured it mints a
+ * user-to-server token for *this* developer (Better-Auth `user.id`) and injects
+ * it into their workspace Secret before the session starts, so Cline commits as
+ * them. When the broker isn't configured the proxy still runs (read-only / no-push
+ * flows); a 409 closes 4002 so the UI can prompt the developer to connect GitHub.
+ *
+ * IMPORTANT (single-workspace caveat): today all sessions proxy to one shared
+ * `CODING_AGENT_WORKSPACE_WS_URL`. Per-user workspace routing does not exist yet,
+ * so concurrent users share one workspace (and the last-provisioned GH_TOKEN).
+ * This is single-user / PoC-safe only — a startup WARN is emitted when both the
+ * workspace and broker are configured.
  */
 export const createCodingAgentRoutes = (settings: Settings, auth: Auth, deps?: CodingAgentDeps) => {
   registerAgentProvider(createCodingAgentProvider())
 
   const fetchFn = deps?.fetchFn ?? globalThis.fetch
+  // One logger for the route's lifetime — do NOT construct per connection.
+  const log = createStandaloneLogger(settings)
+
+  const brokerConfigured = settings.codingAgentBrokerUrl.trim().length > 0
+  if (settings.codingAgentWorkspaceWsUrl.trim().length > 0 && brokerConfigured) {
+    log.warn(
+      'coding-agent: per-user GH_TOKEN is provisioned, but all sessions proxy to a single shared ' +
+        'CODING_AGENT_WORKSPACE_WS_URL. Until per-user workspace routing exists, concurrent users share one ' +
+        'workspace and the last-provisioned token. Treat as single-user / PoC.',
+    )
+  }
 
   return new Elysia({ name: 'coding-agent-routes', prefix: '/coding-agent' }).onError(safeErrorHandler).ws('/ws', {
     upgrade({ request, set }) {
@@ -61,64 +89,99 @@ export const createCodingAgentRoutes = (settings: Settings, auth: Auth, deps?: C
       }
     },
     async open(ws) {
-      const log = createStandaloneLogger(settings)
-      const data = ws.data as unknown as { request?: Request }
+      const data = wsData(ws)
 
       const subprotocolHeader = data.request?.headers.get('sec-websocket-protocol') ?? null
       const user: User | null = await authorizeWsBearer(auth, subprotocolHeader)
       if (!user) {
-        ws.close(wsCloseUnauthorized, 'unauthorized')
+        safeWsClose(ws, wsCloseUnauthorized, 'unauthorized')
         return
       }
 
       const upstreamUrl = settings.codingAgentWorkspaceWsUrl.trim()
       if (upstreamUrl.length === 0) {
-        ws.close(wsCloseProvisionFailed, 'coding agent not configured')
+        log.warn({ userId: user.id }, 'coding-agent: workspace endpoint not configured')
+        safeWsClose(ws, wsCloseProvisionFailed, 'coding agent not configured')
         return
       }
 
-      // Provision this developer's GH_TOKEN before opening the session, so the
-      // workspace can act as them. Skip only when the broker is unconfigured.
-      if (settings.codingAgentBrokerUrl.trim().length > 0) {
-        const result = await provisionWorkspaceToken(
-          {
-            brokerUrl: settings.codingAgentBrokerUrl,
-            serviceToken: settings.codingAgentServiceToken,
-            fetchFn,
-          },
-          user.id,
-        )
-        if (result.status === 'not_connected') {
-          ws.close(wsCloseGithubNotConnected, 'github not connected')
+      // Provision this developer's GH_TOKEN before opening the session. Any throw
+      // (network / broker down) closes the socket rather than leaking out of open().
+      if (brokerConfigured) {
+        let result
+        try {
+          result = await provisionWorkspaceToken(
+            { brokerUrl: settings.codingAgentBrokerUrl, serviceToken: settings.codingAgentServiceToken, fetchFn },
+            user.id,
+          )
+        } catch (err) {
+          log.error({ userId: user.id, err }, 'coding-agent provisioning threw')
+          safeWsClose(ws, wsCloseProvisionFailed, 'provisioning failed')
           return
         }
-        if (result.status === 'failed') {
-          log.error({ userId: user.id, reason: result.reason }, 'coding-agent provisioning failed')
-          ws.close(wsCloseProvisionFailed, 'provisioning failed')
-          return
+        switch (result.status) {
+          case 'ok':
+            log.info({ userId: user.id }, 'coding-agent provisioned')
+            break
+          case 'disabled':
+            log.warn({ userId: user.id }, 'coding-agent broker provisioning disabled; proceeding read-only')
+            break
+          case 'not_connected':
+            log.warn({ userId: user.id }, 'coding-agent: github not connected')
+            safeWsClose(ws, wsCloseGithubNotConnected, 'github not connected')
+            return
+          case 'failed':
+            log.error({ userId: user.id, reason: result.reason }, 'coding-agent provisioning failed')
+            safeWsClose(ws, wsCloseProvisionFailed, 'provisioning failed')
+            return
+          default: {
+            const exhaustive: never = result
+            log.error({ userId: user.id, result: exhaustive }, 'coding-agent: unknown provision result')
+            safeWsClose(ws, wsCloseProvisionFailed, 'provisioning failed')
+            return
+          }
         }
       }
 
-      const proxy = new CodingAgentProxy({
-        send: (payload) => ws.send(payload),
-        onUpstreamClose: (code, reason) => ws.close(code === 1000 ? 1000 : wsCloseProvisionFailed, reason),
-        upstreamUrl,
-        createUpstream: deps?.createUpstream,
-      })
-      ;(ws.data as unknown as ProxySlot).__codingAgentProxy = proxy
+      // The client may have disconnected during the awaited auth/provision above;
+      // `close` would have fired before the proxy existed. Don't open the upstream.
+      if (data.clientClosed) {
+        log.debug({ userId: user.id }, 'coding-agent: client closed during open; aborting')
+        return
+      }
+
+      try {
+        data.proxy = new CodingAgentProxy({
+          send: (payload) => {
+            try {
+              ws.send(payload)
+            } catch {
+              // client gone
+            }
+          },
+          onClose: (code, reason) => safeWsClose(ws, code, reason),
+          onLog: (event, detail) => log.warn({ userId: user.id, ...detail }, event),
+          upstreamUrl,
+        })
+      } catch (err) {
+        log.error({ userId: user.id, err }, 'coding-agent: upstream connect failed')
+        safeWsClose(ws, wsCloseProvisionFailed, 'upstream connect failed')
+        return
+      }
       log.debug({ userId: user.id }, 'coding-agent ws opened')
     },
     message(ws, message) {
-      const proxy = (ws.data as unknown as ProxySlot).__codingAgentProxy
+      const proxy = wsData(ws).proxy
       if (!proxy) {
         return
       }
       proxy.handleClientMessage(typeof message === 'string' ? message : JSON.stringify(message))
     },
     close(ws) {
-      const slot = ws.data as unknown as ProxySlot
-      slot.__codingAgentProxy?.dispose()
-      slot.__codingAgentProxy = undefined
+      const data = wsData(ws)
+      data.clientClosed = true
+      data.proxy?.dispose()
+      data.proxy = undefined
     },
   })
 }
