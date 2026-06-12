@@ -4,3 +4,4 @@
 
 export { createCodingAgentRoutes, type CodingAgentDeps } from './routes'
 export { createCodingAgentProvider, codingAgentProviderId } from './provider'
+export { createCodingAgentGithubRoutes, type CodingAgentGithubDeps } from './github-routes'
