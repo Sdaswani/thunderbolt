@@ -9,6 +9,7 @@ import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/ui/page-header'
 import { AgentList } from '@/components/settings/agents/agent-list'
+import { AgentCatalog } from '@/components/settings/agents/agent-catalog'
 import { AddCustomAgentDialog, type AddCustomAgentPayload } from '@/components/settings/agents/add-custom-agent-dialog'
 import { testAcpConnection } from '@/acp'
 import { createAgent, deleteAgent, updateAgent, useAllAgents } from '@/dal'
@@ -105,6 +106,8 @@ export default function AgentsSettingsPage({ isStandalone }: AgentsSettingsPageP
       </PageHeader>
 
       <AgentList agents={agents} currentUserId={currentUserId} onToggle={handleToggle} onDelete={handleDelete} />
+
+      <AgentCatalog />
 
       <AddCustomAgentDialog
         open={dialogOpen}
