@@ -52,6 +52,41 @@ const makeFakeWss = (port) => {
   return wss
 }
 
+/**
+ * A fake readline interface over a stream. Models real readline+pipe
+ * backpressure: pause()/resume() record being called AND gate 'line' emission —
+ * while paused, any emitted line is queued and replayed in order on resume.
+ * Unpaused, lines emit immediately, so existing tests are unaffected.
+ */
+const makeFakeLineReader = (stream) => {
+  const lines = new EventEmitter()
+  lines.paused = false
+  lines.pauseCalls = 0
+  lines.resumeCalls = 0
+  const queue = []
+  const rawEmit = lines.emit.bind(lines)
+  lines.emit = (event, ...args) => {
+    if (event === 'line' && lines.paused) {
+      queue.push(args)
+      return true
+    }
+    return rawEmit(event, ...args)
+  }
+  lines.pause = () => {
+    lines.paused = true
+    lines.pauseCalls += 1
+  }
+  lines.resume = () => {
+    lines.paused = false
+    lines.resumeCalls += 1
+    while (queue.length > 0) rawEmit('line', ...queue.shift())
+  }
+  stream.on('data', (chunk) => {
+    for (const line of String(chunk).split('\n')) lines.emit('line', line)
+  })
+  return lines
+}
+
 const makeFakeSocket = () => {
   const socket = new EventEmitter()
   socket.readyState = 1 // OPEN
@@ -72,6 +107,7 @@ const startReady = async ({ port = 5000, grace = 800, child = makeFakeChild(), c
   let exited = null
   let stopFn = null
   let banner = null
+  let lines = null
 
   const promise = startBridge(
     { agentCmd: ['my-agent', '--flag'], host: '127.0.0.1', port: 0, logger: quietLogger(), ...cfg },
@@ -81,10 +117,7 @@ const startReady = async ({ port = 5000, grace = 800, child = makeFakeChild(), c
         return wss
       },
       createLineReader: (stream) => {
-        const lines = new EventEmitter()
-        stream.on('data', (chunk) => {
-          for (const line of String(chunk).split('\n')) lines.emit('line', line)
-        })
+        lines = makeFakeLineReader(stream)
         return lines
       },
       onBanner: (url) => {
@@ -104,7 +137,14 @@ const startReady = async ({ port = 5000, grace = 800, child = makeFakeChild(), c
   await new Promise((r) => setTimeout(r, grace))
   await promise
 
-  return { child, wss, getExit: () => exited, getStop: () => stopFn, getBanner: () => banner }
+  return {
+    child,
+    wss,
+    getExit: () => exited,
+    getStop: () => stopFn,
+    getBanner: () => banner,
+    getLines: () => lines,
+  }
 }
 
 /** Open an allowed connection (default Thunderbolt origin) on a ready bridge. */
@@ -157,6 +197,25 @@ describe('startBridge lifecycle', () => {
 
     expect(second.sent).toEqual(['{"id":3}'])
     expect(first.sent).toEqual([]) // old socket no longer receives
+  })
+
+  it('holds agent output across a reconnect instead of dropping it (pause/resume backpressure)', async () => {
+    const { child, wss, getLines } = await startReady()
+    const first = connect(wss)
+    const lines = getLines()
+
+    // Client briefly disconnects (e.g. Thunderbolt's reconnect backoff).
+    first.emit('close', 1000)
+    expect(lines.pauseCalls).toBe(1) // reader paused so output isn't dropped
+
+    // The agent emits an in-flight response WHILE no client is connected.
+    child.stdout.emit('data', '{"id":42}\n')
+    expect(first.sent).toEqual([]) // not delivered to the gone socket — held, not dropped
+
+    // The client reconnects: the reader resumes and drains the held line in order.
+    const second = connect(wss)
+    expect(lines.resumeCalls).toBe(1)
+    expect(second.sent).toEqual(['{"id":42}']) // the in-flight response survived the disconnect
   })
 
   it('supersedes a previous connection: closes the old socket 1000, new becomes active', async () => {

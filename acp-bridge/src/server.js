@@ -82,6 +82,7 @@ export const startBridge = async (cfg, deps) => {
   let wss = null
   /** @type {import('ws').WebSocket | null} */
   let activeSocket = null
+  let readerPaused = false
   let shuttingDown = false
   let ready = false
   let exited = false
@@ -133,6 +134,18 @@ export const startBridge = async (cfg, deps) => {
     const closeWebSocket = (code) => {
       if (activeSocket && activeSocket.readyState === WS_OPEN) activeSocket.close(code)
       wss?.close()
+    }
+
+    // While no client is connected, pause the agent→ws relay so the agent's output
+    // (e.g. an in-flight response during a client reconnect) is held by OS pipe
+    // backpressure instead of dropped. Resumed on the next connection.
+    const clearActiveSocket = (socket) => {
+      if (activeSocket !== socket) return
+      activeSocket = null
+      if (!readerPaused) {
+        lines.pause()
+        readerPaused = true
+      }
     }
 
     // The exit code a signal-driven stop should ultimately exit with. The child's
@@ -254,6 +267,10 @@ export const startBridge = async (cfg, deps) => {
       const previous = activeSocket
       activeSocket = socket
       if (previous && previous !== socket && previous.readyState === WS_OPEN) previous.close(1000)
+      if (readerPaused) {
+        lines.resume()
+        readerPaused = false
+      }
 
       socket.on('message', (data) => {
         // Drop messages from a socket that's been superseded by a newer connection:
@@ -267,9 +284,12 @@ export const startBridge = async (cfg, deps) => {
             logger.debug(extractLogEvent({ direction: 'ws->agent', line: chunk.replace(/\n$/, '') })),
         })
       })
-      socket.on('error', (err) => logger.warn({ lifecycle: 'socket-error', errorCode: err.code }))
+      socket.on('error', (err) => {
+        logger.warn({ lifecycle: 'socket-error', errorCode: err.code })
+        clearActiveSocket(socket)
+      })
       socket.on('close', (closeCode) => {
-        if (activeSocket === socket) activeSocket = null
+        clearActiveSocket(socket)
         logger.info({ lifecycle: 'disconnected', closeCode })
       })
     })
