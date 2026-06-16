@@ -182,6 +182,12 @@ export const startBridge = async (cfg, deps) => {
       safeExit(exitCode)
     })
 
+    // Registered synchronously in the same tick as spawn() above (nothing awaits
+    // before this Promise) and a child 'exit' is always delivered asynchronously,
+    // so this listener can never miss it. That invariant is what makes the grace
+    // timer's `exitCode !== null` early-return safe — by the time exitCode is set,
+    // this handler has already settled the Promise. Do NOT add an `await` before
+    // this Promise: it would open a window where the child exits unobserved.
     child.on('exit', (code, signal) => {
       // A signal-driven stop is in progress: the child has now died, so clear the
       // SIGKILL fallback and drive the deferred final exit.
