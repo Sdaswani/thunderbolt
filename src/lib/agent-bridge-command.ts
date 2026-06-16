@@ -12,7 +12,7 @@ import type { RegistryEntry } from '@/types/registry'
  *
  * Two flavours are produced from the same launch command:
  *   - the install/launch command (`npx <package> <args>` / `uvx <package> <args>`),
- *   - the bridge command that wraps it (`npx acp-bridge -- <launch command>`).
+ *   - the bridge command that wraps it (`npx thunderbolt-acp-bridge -- <launch command>`).
  *
  * `binary` distributions have no portable launch line (the registry leaves the
  * shape opaque per platform), so both helpers return `null` and the UI points
@@ -47,8 +47,8 @@ export const composeLaunchCommand = (entry: RegistryEntry): string | null => {
 export const composeInstallCommand = (entry: RegistryEntry): string | null => composeLaunchCommand(entry)
 
 /**
- * The `acp-bridge` invocation that relays the local stdio agent to a localhost
- * WebSocket: `npx acp-bridge -- <launch command>`. Everything after `--` is the
+ * The `thunderbolt-acp-bridge` invocation that relays the local stdio agent to a localhost
+ * WebSocket: `npx thunderbolt-acp-bridge -- <launch command>`. Everything after `--` is the
  * agent's own launch argv. Returns `null` for `binary` distributions.
  */
 export const composeBridgeCommand = (entry: RegistryEntry): string | null => {
@@ -56,5 +56,5 @@ export const composeBridgeCommand = (entry: RegistryEntry): string | null => {
   if (!launch) {
     return null
   }
-  return `npx acp-bridge -- ${launch}`
+  return `npx thunderbolt-acp-bridge -- ${launch}`
 }

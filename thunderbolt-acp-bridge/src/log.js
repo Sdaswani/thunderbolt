@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /**
- * PII-safe logging for acp-bridge.
+ * PII-safe logging for thunderbolt-acp-bridge.
  *
  * The cardinal rule: log objects are built from an ALLOWLIST of extracted
  * scalars. The raw ACP frame is NEVER handed to the logger, so prompt text,

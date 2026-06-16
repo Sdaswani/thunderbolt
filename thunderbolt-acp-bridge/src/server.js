@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /**
- * Lifecycle wiring for acp-bridge: spawn the agent, stand up a localhost
+ * Lifecycle wiring for thunderbolt-acp-bridge: spawn the agent, stand up a localhost
  * WebSocket server, connect them through the pure relay, and manage shutdown.
  *
  * Design constraints honored here:

@@ -21,7 +21,7 @@ describe('usageError', () => {
   it('maps to exit 64 and prefixes the reason', () => {
     const r = usageError('no agent command given')
     expect(r.exitCode).toBe(64)
-    expect(r.message).toBe('acp-bridge: no agent command given')
+    expect(r.message).toBe('thunderbolt-acp-bridge: no agent command given')
   })
 })
 

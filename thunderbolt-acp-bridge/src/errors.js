@@ -27,7 +27,7 @@ export const exitCodes = {
  * @returns {{ message: string, exitCode: number }}
  */
 export const usageError = (reason) => ({
-  message: `acp-bridge: ${reason}`,
+  message: `thunderbolt-acp-bridge: ${reason}`,
   exitCode: exitCodes.usage,
 })
 

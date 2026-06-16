@@ -25,7 +25,7 @@ type BridgeConnectDialogProps = {
 }
 
 /** Walks the user through running a CLI agent locally and bridging it into
- *  Thunderbolt: install the agent, run `acp-bridge`, then add the printed
+ *  Thunderbolt: install the agent, run `thunderbolt-acp-bridge`, then add the printed
  *  localhost URL as a custom agent. All commands are derived from the registry
  *  distribution at render — no effects, no local state. */
 export const BridgeConnectDialog = ({ entry, open, onOpenChange, onAddCustomAgent }: BridgeConnectDialogProps) => {
@@ -73,7 +73,7 @@ export const BridgeConnectDialog = ({ entry, open, onOpenChange, onAddCustomAgen
           ) : (
             <p className="text-[length:var(--font-size-sm)] text-muted-foreground">
               {entry.name} ships as a platform binary. Follow its install instructions, then run it under{' '}
-              <code className="font-mono">acp-bridge</code> and add the printed{' '}
+              <code className="font-mono">thunderbolt-acp-bridge</code> and add the printed{' '}
               <code className="font-mono">ws://127.0.0.1:PORT</code> URL.
             </p>
           )}

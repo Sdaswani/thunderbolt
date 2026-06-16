@@ -227,7 +227,7 @@ describe('openTransport — agent-type routing', () => {
   it.each(['ws://127.0.0.1:7777/acp', 'ws://localhost:7777/acp', 'ws://[::1]:7777/acp', 'ws://sub.localhost:7777/acp'])(
     'remote-acp loopback target %s connects directly on Web (no proxy)',
     async (url) => {
-      // The acp-bridge carve-out: a loopback remote-acp target is the local
+      // The thunderbolt-acp-bridge carve-out: a loopback remote-acp target is the local
       // bridge socket. On Web (Connected) it must skip the cloud proxy — the
       // proxy can't reach localhost — and connect natively to the URL as-is.
       const transport = await openTransport({

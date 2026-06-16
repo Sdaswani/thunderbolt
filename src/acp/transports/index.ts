@@ -24,7 +24,7 @@
  *         its own machine has no SSRF surface — the proxy's localhost rejection
  *         protects the *cloud backend*, which is irrelevant here — and the proxy
  *         would reject the `ws://`/private-host target anyway. This is the
- *         `acp-bridge` path: a local stdio agent bridged to a localhost socket.
+ *         `thunderbolt-acp-bridge` path: a local stdio agent bridged to a localhost socket.
  *       - Web (always Connected): proxied WebSocket via `createProxyWebSocket`.
  *       - Tauri + proxy toggle ON  (Connected):  proxied WebSocket.
  *       - Tauri + proxy toggle OFF (Standalone): native `new WebSocket()`.
@@ -115,7 +115,7 @@ export const resolveWebSocketFactory = (inputs: OpenTransportInputs): WebSocketF
   if (inputs.agentType === 'managed-acp') {
     return resolveManagedAcpFactory(inputs)
   }
-  // A loopback remote-acp target is the local `acp-bridge` socket — connect
+  // A loopback remote-acp target is the local `thunderbolt-acp-bridge` socket — connect
   // directly, skipping the cloud proxy, on every platform (web included). The
   // proxy can't reach localhost and would reject the target regardless.
   if (isLoopbackUrl(inputs.url)) {

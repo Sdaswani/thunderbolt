@@ -1,4 +1,4 @@
-# acp-bridge
+# thunderbolt-acp-bridge
 
 A tiny local helper that bridges a **stdio ACP agent** (Claude Code, Gemini CLI,
 Goose, any [Agent Client Protocol](https://agentclientprotocol.com) agent) to a
@@ -6,12 +6,12 @@ localhost WebSocket so [Thunderbolt](https://thunderbolt.io) — web or desktop 
 can talk to it.
 
 Thunderbolt reaches agents over a WebSocket. Most ACP agents speak **stdio**
-(newline-delimited JSON-RPC). `acp-bridge` spawns your agent and relays its stdio
+(newline-delimited JSON-RPC). `thunderbolt-acp-bridge` spawns your agent and relays its stdio
 to a `ws://127.0.0.1:PORT` socket — one JSON object per WebSocket message,
 exactly what Thunderbolt expects.
 
 ```
-Thunderbolt  ⇄  ws://127.0.0.1:PORT  ⇄  acp-bridge  ⇄  stdio  ⇄  your agent
+Thunderbolt  ⇄  ws://127.0.0.1:PORT  ⇄  thunderbolt-acp-bridge  ⇄  stdio  ⇄  your agent
 ```
 
 No package manager to install. One dependency (`ws`); everything else is a Node
@@ -22,19 +22,19 @@ built-in. Requires **Node.js ≥ 18**.
 Run the bridge, putting your agent command after `--`:
 
 ```bash
-npx acp-bridge -- <your agent command>
+npx thunderbolt-acp-bridge -- <your agent command>
 ```
 
 A real example (the Claude Code ACP adapter):
 
 ```bash
-npx acp-bridge -- npx -y @zed-industries/claude-code-acp
+npx thunderbolt-acp-bridge -- npx -y @zed-industries/claude-code-acp
 ```
 
 The bridge prints a banner with a copyable URL:
 
 ```
-acp-bridge ready
+thunderbolt-acp-bridge ready
   Agent:     npx
   Listening: ws://127.0.0.1:51847
 
@@ -58,7 +58,7 @@ agent down cleanly too.
 ## Usage
 
 ```bash
-npx acp-bridge [options] -- <agent-command> [agent-args...]
+npx thunderbolt-acp-bridge [options] -- <agent-command> [agent-args...]
 ```
 
 Everything **after `--`** is your agent command. It's passed **straight to the OS
@@ -83,7 +83,7 @@ without it (or with nothing after it) the bridge tells you so and exits.
 
 ## How it works
 
-`acp-bridge` is a pure byte relay — it links no ACP SDK and never interprets the
+`thunderbolt-acp-bridge` is a pure byte relay — it links no ACP SDK and never interprets the
 protocol. It spawns your agent once and reuses that single child process across
 WebSocket reconnects (so session state survives). Agent stdout is split into
 lines and each non-empty JSON object is sent as exactly one WebSocket frame;
@@ -121,7 +121,7 @@ any such socket with code `1008`.
 
 ## Logging & privacy
 
-`acp-bridge` never logs ACP message content. Log records are built from an
+`thunderbolt-acp-bridge` never logs ACP message content. Log records are built from an
 **allowlist of scalars** — there is no code path that copies a frame body into a
 log line. Logged fields are limited to: direction, message kind, a fixed set of
 known method names (anything else collapses to `other`), a scalar JSON-RPC id
@@ -141,7 +141,7 @@ The bridge prints an actionable message to stderr and exits with a specific code
 | Exit | When | Fix |
 | ---- | ---- | --- |
 | `0`  | Clean shutdown (agent exited normally, or Ctrl-C with the agent gone). | Nothing — normal exit. |
-| `64` | **Bad invocation.** Missing `--` separator, no agent command, an unknown option, or an invalid `--port`. | Re-check the command. The agent command goes after `--`, e.g. `npx acp-bridge -- npx -y @zed-industries/claude-code-acp`. |
+| `64` | **Bad invocation.** Missing `--` separator, no agent command, an unknown option, or an invalid `--port`. | Re-check the command. The agent command goes after `--`, e.g. `npx thunderbolt-acp-bridge -- npx -y @zed-industries/claude-code-acp`. |
 | `69` | **Agent or server problem.** `command not found` (agent not on PATH), `permission denied` (agent not executable), the agent **exited before speaking ACP**, port already in use, or the agent exited non-zero while running. | For "command not found", install the agent / check your PATH. For "exited before speaking ACP", run the agent command directly to see its error (its stderr also prints above the message). For "port already in use", omit `--port` to auto-pick or choose another. |
 | `130`| **Ctrl-C / `SIGTERM`.** You stopped the bridge. | Nothing — expected interrupt. |
 

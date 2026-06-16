@@ -3,17 +3,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /**
- * Pure CLI argument parser for acp-bridge.
+ * Pure CLI argument parser for thunderbolt-acp-bridge.
  *
  * Everything BEFORE the `--` separator is a bridge flag. Everything AFTER it is
  * the agent command + argv, passed verbatim to `spawn` (no shell, no quoting).
  * A standalone `--` is mandatory to separate bridge flags from the agent argv.
  */
 
-const HELP_TEXT = `acp-bridge — relay a local stdio ACP agent to a localhost WebSocket for Thunderbolt.
+const HELP_TEXT = `thunderbolt-acp-bridge — relay a local stdio ACP agent to a localhost WebSocket for Thunderbolt.
 
 Usage:
-  npx acp-bridge [options] -- <agent-command> [agent-args...]
+  npx thunderbolt-acp-bridge [options] -- <agent-command> [agent-args...]
 
 Everything after \`--\` is the agent command, passed straight to the OS (no shell).
 
@@ -30,7 +30,7 @@ Options:
   --version             Print the version and exit
 
 Example:
-  npx acp-bridge -- npx -y @zed-industries/claude-code-acp
+  npx thunderbolt-acp-bridge -- npx -y @zed-industries/claude-code-acp
 
 Paste the printed ws://127.0.0.1:PORT URL into Thunderbolt → Add Custom Agent.`
 
@@ -125,7 +125,7 @@ export const parseArgs = (argv) => {
     }
     if (!flag.startsWith('-')) {
       // A bare token before `--` almost always means the user forgot the
-      // separator (e.g. `acp-bridge my-agent` instead of `acp-bridge -- my-agent`).
+      // separator (e.g. `thunderbolt-acp-bridge my-agent` instead of `thunderbolt-acp-bridge -- my-agent`).
       return { ...result, error: 'no agent command given (did you forget the `--` before the agent command?)' }
     }
     return { ...result, error: `unknown option: ${flag}` }

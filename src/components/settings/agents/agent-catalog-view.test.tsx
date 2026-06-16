@@ -147,7 +147,7 @@ describe('AgentCatalogView', () => {
     fireEvent.click(screen.getByRole('button', { name: /connect via bridge/i }))
 
     // The bridge command is composed from the npx distribution and shown copyable.
-    expect(screen.getByText('npx acp-bridge -- npx goose@1.2.3')).toBeInTheDocument()
+    expect(screen.getByText('npx thunderbolt-acp-bridge -- npx goose@1.2.3')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /add the agent/i }))
     expect(onAddCustomAgent).toHaveBeenCalledTimes(1)

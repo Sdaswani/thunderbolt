@@ -59,15 +59,15 @@ describe('composeInstallCommand', () => {
 })
 
 describe('composeBridgeCommand', () => {
-  it('wraps the npx launch command in acp-bridge', () => {
+  it('wraps the npx launch command in thunderbolt-acp-bridge', () => {
     expect(composeBridgeCommand(entry({ npx: { package: '@agentclientprotocol/claude-agent-acp' } }))).toBe(
-      'npx acp-bridge -- npx @agentclientprotocol/claude-agent-acp',
+      'npx thunderbolt-acp-bridge -- npx @agentclientprotocol/claude-agent-acp',
     )
   })
 
   it('wraps a uvx launch command with its args', () => {
     expect(composeBridgeCommand(entry({ uvx: { package: 'py-agent', args: ['serve', '--port', '0'] } }))).toBe(
-      'npx acp-bridge -- uvx py-agent serve --port 0',
+      'npx thunderbolt-acp-bridge -- uvx py-agent serve --port 0',
     )
   })
 

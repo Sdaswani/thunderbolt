@@ -159,7 +159,7 @@ export const AddCustomAgentDialog = ({
     trimmedName.length > 0 && trimmedUrl.length > 0 && state.connectionStatus === 'success' && !state.submitting
   // The probe is only meaningful once the URL is a valid WebSocket endpoint.
   const canTestConnection = trimmedUrl.length > 0 && !urlError
-  // Loopback targets (the local acp-bridge socket) trip the browser's Local
+  // Loopback targets (the local thunderbolt-acp-bridge socket) trip the browser's Local
   // Network Access prompt — hint the user so the Allow dialog isn't a surprise.
   const showLoopbackHint = !urlError && isLoopbackUrl(trimmedUrl)
 

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "acp-bridge",
+      "name": "thunderbolt-acp-bridge",
       "dependencies": {
         "ws": "^8.18.0",
       },

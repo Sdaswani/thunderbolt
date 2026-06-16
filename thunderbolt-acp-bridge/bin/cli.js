@@ -5,7 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /**
- * acp-bridge CLI entry point.
+ * thunderbolt-acp-bridge CLI entry point.
  *
  * Thin wiring only: parse argv, build the injectable deps (spawn, ws server,
  * line reader, logger), start the bridge, and translate signals into a graceful
@@ -42,7 +42,7 @@ const printBanner = (wsUrl, cmd0) => {
   process.stderr.write(
     [
       '',
-      'acp-bridge ready',
+      'thunderbolt-acp-bridge ready',
       `  Agent:     ${cmd0}`,
       `  Listening: ${wsUrl}`,
       '',
