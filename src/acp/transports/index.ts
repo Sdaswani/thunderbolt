@@ -19,6 +19,12 @@
  *     (true Standalone — no backend reachable).
  *   - `remote-acp` (user-configured external agents): Connected vs Standalone
  *     is layered orthogonally:
+ *       - Loopback target (127.0.0.1 / localhost / [::1] / *.localhost): native
+ *         `new WebSocket()` on every platform, web included. A browser reaching
+ *         its own machine has no SSRF surface — the proxy's localhost rejection
+ *         protects the *cloud backend*, which is irrelevant here — and the proxy
+ *         would reject the `ws://`/private-host target anyway. This is the
+ *         `acp-bridge` path: a local stdio agent bridged to a localhost socket.
  *       - Web (always Connected): proxied WebSocket via `createProxyWebSocket`.
  *       - Tauri + proxy toggle ON  (Connected):  proxied WebSocket.
  *       - Tauri + proxy toggle OFF (Standalone): native `new WebSocket()`.
@@ -36,6 +42,7 @@ import { useLocalSettingsStore } from '@/stores/local-settings-store'
 import type { AgentType } from '@shared/acp-types'
 import { encodeWsBearer, wsBearerSubprotocolPrefix, wsCarrierSubprotocol } from '@shared/ws-bearer'
 import type { AcpTransport } from '../types'
+import { isLoopbackUrl } from './is-loopback'
 import { openWebSocketTransport, type WebSocketFactory, type WebSocketLike } from './websocket'
 
 export type OpenTransportInputs = {
@@ -104,9 +111,15 @@ export const openTransport = async (inputs: OpenTransportInputs): Promise<AcpTra
  *  When the proxied path is selected, `createProxyWebSocket` returns a sync
  *  factory that builds the `Sec-WebSocket-Protocol` list (carrier + bearer +
  *  target) synchronously from the in-memory bearer token. */
-const resolveWebSocketFactory = (inputs: OpenTransportInputs): WebSocketFactory => {
+export const resolveWebSocketFactory = (inputs: OpenTransportInputs): WebSocketFactory => {
   if (inputs.agentType === 'managed-acp') {
     return resolveManagedAcpFactory(inputs)
+  }
+  // A loopback remote-acp target is the local `acp-bridge` socket — connect
+  // directly, skipping the cloud proxy, on every platform (web included). The
+  // proxy can't reach localhost and would reject the target regardless.
+  if (isLoopbackUrl(inputs.url)) {
+    return nativeWebSocketFactory
   }
   if (isStandaloneTransport(inputs.isStandalone, inputs.readProxyEnabled)) {
     return nativeWebSocketFactory

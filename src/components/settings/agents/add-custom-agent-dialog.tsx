@@ -17,6 +17,7 @@ import { Dialog } from '@/components/ui/dialog'
 import { StatusCard } from '@/components/ui/status-card'
 import { getPlatform, isTauri } from '@/lib/platform'
 import { testAcpConnection as defaultTestAcpConnection } from '@/acp'
+import { isLoopbackUrl } from '@/acp/transports/is-loopback'
 
 /** Maps a user-entered URL to the ACP transport flavor we support, or `null`
  *  when the scheme is unsupported (or the URL is malformed). WebSocket is the
@@ -158,6 +159,9 @@ export const AddCustomAgentDialog = ({
     trimmedName.length > 0 && trimmedUrl.length > 0 && state.connectionStatus === 'success' && !state.submitting
   // The probe is only meaningful once the URL is a valid WebSocket endpoint.
   const canTestConnection = trimmedUrl.length > 0 && !urlError
+  // Loopback targets (the local acp-bridge socket) trip the browser's Local
+  // Network Access prompt — hint the user so the Allow dialog isn't a surprise.
+  const showLoopbackHint = !urlError && isLoopbackUrl(trimmedUrl)
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
@@ -226,6 +230,11 @@ export const AddCustomAgentDialog = ({
             <p className="text-[length:var(--font-size-xs)] text-muted-foreground">
               WebSocket endpoint for the remote ACP agent
             </p>
+            {showLoopbackHint && (
+              <p className="text-[length:var(--font-size-xs)] text-muted-foreground">
+                Your browser may ask permission to reach your local network — click Allow.
+              </p>
+            )}
           </div>
           <div className="grid gap-2">
             <Label htmlFor="agent-description">Description</Label>

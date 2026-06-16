@@ -223,4 +223,55 @@ describe('openTransport — agent-type routing', () => {
 
     transport.close()
   })
+
+  it.each(['ws://127.0.0.1:7777/acp', 'ws://localhost:7777/acp', 'ws://[::1]:7777/acp', 'ws://sub.localhost:7777/acp'])(
+    'remote-acp loopback target %s connects directly on Web (no proxy)',
+    async (url) => {
+      // The acp-bridge carve-out: a loopback remote-acp target is the local
+      // bridge socket. On Web (Connected) it must skip the cloud proxy — the
+      // proxy can't reach localhost — and connect natively to the URL as-is.
+      const transport = await openTransport({
+        url,
+        transport: 'websocket',
+        agentType: 'remote-acp',
+        signal: new AbortController().signal,
+        isStandalone: () => false,
+        readProxyEnabled: () => null,
+        backoffMs: () => 1,
+        httpClient: stubHttpClient,
+        getAuthToken: () => 'token-abc',
+      })
+
+      expect(FakeBrowserSocket.instances).toHaveLength(1)
+      const socket = FakeBrowserSocket.instances[0]
+      expect(socket.url).toBe(url)
+      // No proxy target subprotocol, and no bearer — it's a direct local connect.
+      expect(socket.protocols.some((p) => p.startsWith(wsTargetPrefix))).toBe(false)
+      expect(socket.protocols).toHaveLength(0)
+
+      transport.close()
+    },
+  )
+
+  it('remote-acp non-loopback target on Web still routes through the proxy (unchanged)', async () => {
+    // Guard against the loopback carve-out leaking into the public-host path.
+    const transport = await openTransport({
+      url: 'wss://agent.example.com/acp',
+      transport: 'websocket',
+      agentType: 'remote-acp',
+      signal: new AbortController().signal,
+      isStandalone: () => false,
+      readProxyEnabled: () => null,
+      backoffMs: () => 1,
+      httpClient: stubHttpClient,
+      getAuthToken: () => 'proxy-token-xyz',
+    })
+
+    expect(FakeBrowserSocket.instances).toHaveLength(1)
+    const socket = FakeBrowserSocket.instances[0]
+    expect(socket.url).toBe('ws://cloud.test/v1/proxy/ws')
+    expect(socket.protocols.some((p) => p.startsWith(wsTargetPrefix))).toBe(true)
+
+    transport.close()
+  })
 })

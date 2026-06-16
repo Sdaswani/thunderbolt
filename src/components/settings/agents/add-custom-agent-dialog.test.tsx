@@ -282,6 +282,19 @@ describe('AddCustomAgentDialog — connection status', () => {
     expect(submitAfterSuccess).not.toBeDisabled()
   })
 
+  it('shows the local-network hint for a loopback URL and hides it for a public URL', () => {
+    renderWithProbe(async () => ({ success: true }))
+    const hint = /local network/i
+
+    expect(screen.queryByText(hint)).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'ws://127.0.0.1:7777/acp' } })
+    expect(screen.getByText(hint)).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'wss://agent.example.com/acp' } })
+    expect(screen.queryByText(hint)).not.toBeInTheDocument()
+  })
+
   it('clears a prior connection result when the URL changes', async () => {
     renderWithProbe(async () => ({ success: true }))
 
