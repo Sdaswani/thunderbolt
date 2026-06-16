@@ -211,7 +211,7 @@ export const startBridge = async (cfg, deps) => {
       logger.info({ lifecycle: 'agent-exited', exitCode: code ?? undefined, signal: signal ?? undefined })
       process.stderr.write('\nAgent exited. Stopping bridge.\n')
       closeWebSocket(1011)
-      safeExit(code === 0 || code == null ? exitCodes.ok : exitCodes.unavailable)
+      safeExit(code === 0 ? exitCodes.ok : exitCodes.unavailable)
     })
 
     // --- WebSocket server -----------------------------------------------------

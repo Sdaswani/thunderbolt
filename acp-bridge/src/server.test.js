@@ -305,6 +305,32 @@ describe('startBridge lifecycle', () => {
     expect(child.killed).toContain('SIGKILL') // child reaped before exit, not orphaned
     expect(exited).toBe(69)
   })
+
+  it('agent clean-exits (0, null) after ready → exit 0', async () => {
+    const { child, getExit } = await startReady()
+
+    child.emit('exit', 0, null)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getExit()).toBe(0)
+  })
+
+  it('agent dies by signal (null, SIGKILL) after ready → exit 69, not 0', async () => {
+    const { child, getExit } = await startReady()
+
+    // A signal death surfaces as code === null + signal set — an abnormal exit
+    // that must map to unavailable (69), never to ok (0).
+    child.emit('exit', null, 'SIGKILL')
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getExit()).toBe(69)
+  })
+
+  it('agent exits non-zero (1, null) after ready → exit 69', async () => {
+    const { child, getExit } = await startReady()
+
+    child.emit('exit', 1, null)
+    await new Promise((r) => setTimeout(r, 0))
+    expect(getExit()).toBe(69)
+  })
 })
 
 describe('startBridge — Origin allowlist (cross-origin hijack guard)', () => {
