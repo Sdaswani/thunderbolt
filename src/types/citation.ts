@@ -28,6 +28,10 @@ export type DocumentCitationSource = CitationSource & {
     fileId: string
     fileName: string
     pageNumber?: number
+    /** Author(s) of the cited material, for the sidebar row subtitle. */
+    contributors?: string
+    /** Retrieval relevance score (0–1), for the sidebar relevance indicator. */
+    score?: number
   }
 }
 

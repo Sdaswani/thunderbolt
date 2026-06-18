@@ -138,6 +138,16 @@ export type HaystackReferenceMeta = {
   fileName: string
   /** Optional page number within the file. */
   pageNumber?: number
+  /** Chapter/section title — the citation's display title. */
+  title?: string
+  /** Book/publication title — the citation's source label. */
+  bookTitle?: string
+  /** Canonical URL of the cited passage, if the pipeline provides one. */
+  sourceUrl?: string
+  /** Author(s) of the cited material, as a display string. */
+  contributors?: string
+  /** Retrieval relevance score (0–1) of the cited document. */
+  score?: number
 }
 
 /**

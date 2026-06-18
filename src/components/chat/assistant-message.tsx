@@ -14,6 +14,8 @@ import type { HaystackReferenceMeta, ThunderboltUIMessage, UIMessageMetadata } f
 import type { SourceMetadata } from '@/types/source'
 import type { TextUIPart } from 'ai'
 import { memo, useMemo, type ReactNode } from 'react'
+import { buildMessageCitations } from './citation-utils'
+import { CitationsSidebarButton } from './citations-sidebar'
 import { CopyMessageButton } from './copy-message-button'
 import { ReasoningGroup } from './reasoning-group'
 import { SyntheticLoadingPart } from './synthetic-loading-part'
@@ -126,6 +128,10 @@ export const AssistantMessage = memo(
       [JSON.stringify(message.metadata?.haystackReferences)],
     )
 
+    // Deduped document-citation set for this message — backs the footer
+    // "show sources" button that opens the citations sidebar on demand.
+    const citations = useMemo(() => buildMessageCitations(haystackReferences ?? []), [haystackReferences])
+
     const mcpTools = useMemo(
       () => message.metadata?.mcpTools,
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -189,11 +195,12 @@ export const AssistantMessage = memo(
             {partElement}
           </div>
         ))}
-        {!isStreaming && copyText && (
+        {!isStreaming && (copyText || citations.length > 0) && (
           <div
             className={`flex items-center gap-2.5 px-4 ${hasWidgets || lastPartIsReasoningGroup ? 'mt-1' : '-mt-6'} ${showCopyOnHover ? 'md:opacity-0 md:group-hover:opacity-100 md:transition-opacity' : ''}`}
           >
-            <CopyMessageButton text={copyText} />
+            {copyText && <CopyMessageButton text={copyText} />}
+            <CitationsSidebarButton messageId={message.id} sources={citations} />
           </div>
         )}
       </div>

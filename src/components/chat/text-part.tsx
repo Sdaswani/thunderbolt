@@ -4,12 +4,9 @@
 
 import { type ContentPart, parseContentParts } from '@/ai/widget-parser'
 import { sourceToCitation } from '@/lib/source-utils'
-import {
-  buildDocumentSideviewId,
-  type CitationMap,
-  type CitationSource,
-  type DocumentCitationSource,
-} from '@/types/citation'
+import { type CitationMap, type CitationSource } from '@/types/citation'
+import { buildMessageCitations, haystackRefToSource } from './citation-utils'
+import { CitationMessageProvider } from './citations-sidebar-context'
 import type { HaystackReferenceMeta } from '@/types'
 import type { SourceMetadata } from '@/types/source'
 import { type TextUIPart } from 'ai'
@@ -120,20 +117,7 @@ export const buildDocumentCitationPlaceholders = (
       if (!ref) {
         continue
       }
-      const ext = ref.fileName.split('.').pop()?.toLowerCase() ?? ''
-      const source: DocumentCitationSource = {
-        id: buildDocumentSideviewId(ref),
-        title: ref.fileName,
-        url: '',
-        siteName: ext.toUpperCase(),
-        isPrimary: validSources.length === 0,
-        documentMeta: {
-          fileId: ref.fileId,
-          fileName: ref.fileName,
-          pageNumber: ref.pageNumber,
-        },
-      }
-      validSources.push(source)
+      validSources.push(haystackRefToSource(ref, validSources.length === 0))
     }
 
     if (validSources.length === 0) {
@@ -151,6 +135,13 @@ export const buildDocumentCitationPlaceholders = (
 export const TextPart = memo(({ part, messageId, sources, haystackReferences }: TextPartProps) => {
   const hasNewSources = !!sources && sources.length > 0
   const hasDocumentRefs = !!haystackReferences && haystackReferences.length > 0
+
+  // Full deduped citation set for the message — provided to inline badges so a
+  // click opens the whole message's sources in the sidebar.
+  const messageCitations = useMemo(
+    () => (hasDocumentRefs ? buildMessageCitations(haystackReferences ?? []) : []),
+    [hasDocumentRefs, haystackReferences],
+  )
 
   // Build citation data upfront so the hook is always called in the same order
   const { processedParts, citations, hasCitations, hasText } = useMemo(() => {
@@ -213,34 +204,38 @@ export const TextPart = memo(({ part, messageId, sources, haystackReferences }: 
 
   if (hasCitations && hasText) {
     return (
-      <CitationPopoverProvider>
-        <CitationContext.Provider value={citations}>
-          {dedupedParts.map((part, index) => {
-            if (part.type === 'text') {
+      <CitationMessageProvider value={hasDocumentRefs ? { messageId, sources: messageCitations } : null}>
+        <CitationPopoverProvider>
+          <CitationContext.Provider value={citations}>
+            {dedupedParts.map((part, index) => {
+              if (part.type === 'text') {
+                return (
+                  <div key={`text-${index}`} className="p-4 my-2">
+                    <MemoizedMarkdown
+                      key={`${messageId}-text-${index}`}
+                      id={`${messageId}-${index}`}
+                      content={part.content}
+                      components={citationMarkdownComponents}
+                    />
+                  </div>
+                )
+              }
               return (
-                <div key={`text-${index}`} className="p-4 my-2">
-                  <MemoizedMarkdown
-                    key={`${messageId}-text-${index}`}
-                    id={`${messageId}-${index}`}
-                    content={part.content}
-                    components={citationMarkdownComponents}
-                  />
+                <div
+                  key={
+                    part.widget.widget === 'link-preview'
+                      ? (part.widget.args as { url: string }).url
+                      : `widget-${index}`
+                  }
+                  className="animate-in slide-in-from-bottom-2 fade-in duration-300 ease-out"
+                >
+                  <WidgetRenderer widget={part.widget} messageId={messageId} sources={sources} />
                 </div>
               )
-            }
-            return (
-              <div
-                key={
-                  part.widget.widget === 'link-preview' ? (part.widget.args as { url: string }).url : `widget-${index}`
-                }
-                className="animate-in slide-in-from-bottom-2 fade-in duration-300 ease-out"
-              >
-                <WidgetRenderer widget={part.widget} messageId={messageId} sources={sources} />
-              </div>
-            )
-          })}
-        </CitationContext.Provider>
-      </CitationPopoverProvider>
+            })}
+          </CitationContext.Provider>
+        </CitationPopoverProvider>
+      </CitationMessageProvider>
     )
   }
 

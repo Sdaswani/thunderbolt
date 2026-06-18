@@ -5,9 +5,10 @@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { useIsMobile } from '@/hooks/use-mobile'
-import type { CitationSource } from '@/types/citation'
+import { type CitationSource, isDocumentCitation } from '@/types/citation'
 import { memo, useState } from 'react'
 import { useCitationPopover } from './citation-popover'
+import { useCitationMessage, useCitationsSidebar } from './citations-sidebar-context'
 import { SourceList } from './source-list'
 
 type CitationBadgeProps = {
@@ -41,10 +42,13 @@ const badgeClass =
 
 const getBadgeLabel = (sources: CitationSource[]) => {
   const primary = sources.find((s) => s.isPrimary) || sources[0]
+  // Document citations show the chapter/section title (more distinct than the
+  // source name repeated across every chip); web citations show the publisher.
+  const label = isDocumentCitation(primary) ? primary.title || primary.siteName : primary.siteName || primary.title
   return {
-    displayName: primary.siteName || primary.title,
+    displayName: label,
     additionalCount: sources.length > 1 ? `+${sources.length - 1}` : null,
-    ariaLabel: `View source: ${primary.siteName || primary.title}`,
+    ariaLabel: `View source: ${label}`,
   }
 }
 
@@ -80,9 +84,24 @@ const BadgeButton = ({ sources, isOpen, onToggle }: BadgeButtonProps) => {
 
 const ManagedBadge = memo(({ sources, citationId }: { sources: CitationSource[]; citationId: number }) => {
   const ctx = useCitationPopover()!
+  const sidebar = useCitationsSidebar()
+  const message = useCitationMessage()
   const isOpen = ctx.popover?.citationId === citationId
 
+  const primary = sources.find((s) => s.isPrimary) ?? sources[0]
+
   const toggle = (element: HTMLElement) => {
+    // Document citations open the message's full citation set in the sidebar
+    // (highlighting the clicked source) instead of the inline popover; web
+    // citations fall through to the inline popover.
+    if (sidebar && message && primary && isDocumentCitation(primary)) {
+      sidebar.open({
+        messageId: message.messageId,
+        sources: message.sources,
+        highlightId: primary.documentMeta.fileId,
+      })
+      return
+    }
     if (isOpen) {
       ctx.close()
     } else {
