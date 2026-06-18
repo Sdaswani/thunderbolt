@@ -31,7 +31,7 @@ import { randomUUID, timingSafeEqual } from 'node:crypto'
 
 import { isOriginAllowed, sanitizeOrigin, defaultAllowedOrigins, classifyKind, safeMethod } from './log.js'
 import { parseRpcObject } from './relay.js'
-import { resolvePort } from './util.js'
+import { resolvePort, emitInsecureFlagWarnings } from './util.js'
 
 /** Cap on a single request body. MCP messages are small JSON-RPC frames; a
  *  multi-MB POST to a localhost agent bridge is never legitimate and is a cheap
@@ -66,6 +66,10 @@ const CORS_ALLOW_HEADERS = 'Content-Type, Authorization, Mcp-Session-Id, MCP-Pro
 export const startMcpFace = (cfg, deps) => {
   const { child, lines, host, port, allowOrigins = [], allowAnyOrigin = false, requiredBearer = null, logger } = cfg
   const { createHttpServer, createTransport } = deps
+
+  // Same loud warnings the ACP face emits — disabling the Origin guard or binding
+  // a non-loopback host fronts a privileged agent and must alert the user in BOTH modes.
+  emitInsecureFlagWarnings({ host, allowAnyOrigin, logger })
 
   const allowlist = [...defaultAllowedOrigins, ...allowOrigins]
   const transport = createTransport()
@@ -136,8 +140,10 @@ export const startMcpFace = (cfg, deps) => {
     const server = createHttpServer((req, res) => {
       const ctx = { req, res, transport, allowlist, allowAnyOrigin, requiredBearer, child, logger, openResponses }
       handleRequest(ctx).catch((err) => {
-        // A handler-level failure must never crash the process; answer 500.
-        logger.error({ lifecycle: 'mcp-handler-error', detail: err?.message })
+        // A handler-level failure must never crash the process; answer 500. Log
+        // ONLY the error code (a fixed Node string) — never err.message, which can
+        // echo request-derived content and break the bridge's PII-safe logging.
+        logger.error({ lifecycle: 'mcp-handler-error', errorCode: err?.code })
         if (!res.headersSent) endJson(res, 500, jsonRpcError(JSONRPC_INTERNAL_ERROR, 'Internal bridge error'))
       })
     })

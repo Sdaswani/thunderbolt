@@ -23,7 +23,7 @@ import { serverError } from './errors.js'
 import { superviseChild } from './child.js'
 import { wireAgentToWs, handleWsMessage } from './relay.js'
 import { extractLogEvent, sanitizeOrigin, isOriginAllowed, defaultAllowedOrigins } from './log.js'
-import { resolvePort, formatHostForUrl } from './util.js'
+import { resolvePort, formatHostForUrl, emitInsecureFlagWarnings } from './util.js'
 
 const WS_OPEN = 1
 const WS_CLOSE_NORMAL = 1000
@@ -57,22 +57,7 @@ export const startBridge = async (cfg, deps) => {
 
   const allowlist = [...defaultAllowedOrigins, ...allowOrigins]
 
-  if (allowAnyOrigin) {
-    logger.warn({ lifecycle: 'origin-check-disabled' })
-    process.stderr.write(
-      '\nWARNING: --allow-any-origin is set — the Origin check is OFF.\n' +
-        'Any web page open in a browser on this machine can connect to the bridge\n' +
-        'and drive your agent. Use this only for trusted dev/self-host setups.\n',
-    )
-  }
-
-  if (!isLoopbackHost(host)) {
-    process.stderr.write(
-      `\nWARNING: --host ${host} is not a loopback address — the bridge (and your\n` +
-        'agent) is now reachable by other hosts on the network, not just this\n' +
-        'machine. Keep the default 127.0.0.1 unless you really need remote access.\n',
-    )
-  }
+  emitInsecureFlagWarnings({ host, allowAnyOrigin, logger })
 
   return new Promise((resolve, reject) => {
     /** @type {import('ws').WebSocketServer | null} */
@@ -207,12 +192,3 @@ export const startBridge = async (cfg, deps) => {
     deps.onStop?.(stop)
   })
 }
-
-/**
- * Whether a bind host is a loopback address (only reachable from this machine).
- * A non-loopback host exposes the agent to other hosts on the network, which
- * warrants a prominent startup warning.
- * @param {string} host
- * @returns {boolean}
- */
-const isLoopbackHost = (host) => host === '127.0.0.1' || host === 'localhost' || host === '::1'

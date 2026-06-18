@@ -401,3 +401,22 @@ describe('startMcpFace — health probe', () => {
     expect(JSON.parse(res.body)).toEqual({ ok: true })
   })
 })
+
+describe('startMcpFace — insecure-flag warnings (parity with ACP)', () => {
+  it('emits the loud warnings in MCP mode when the Origin guard is off AND the host is non-loopback', async () => {
+    const warned = []
+    const logger = { debug() {}, info() {}, warn: (e) => warned.push(e), error() {} }
+    await startFace({ cfg: { allowAnyOrigin: true, host: '0.0.0.0', logger } })
+    expect(warned.some((e) => e.lifecycle === 'origin-check-disabled')).toBe(true)
+    expect(warned.some((e) => e.lifecycle === 'non-loopback-host')).toBe(true)
+  })
+
+  it('stays silent on the safe defaults (loopback host, Origin guard on)', async () => {
+    const warned = []
+    const logger = { debug() {}, info() {}, warn: (e) => warned.push(e), error() {} }
+    await startFace({ cfg: { allowAnyOrigin: false, host: '127.0.0.1', logger } })
+    expect(warned.some((e) => e.lifecycle === 'origin-check-disabled' || e.lifecycle === 'non-loopback-host')).toBe(
+      false,
+    )
+  })
+})
