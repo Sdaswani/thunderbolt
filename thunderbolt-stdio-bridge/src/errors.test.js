@@ -8,12 +8,13 @@ import {
   usageError,
   spawnError,
   serverError,
+  tunnelError,
   earlyExitError,
 } from './errors.js'
 
 describe('exitCodes', () => {
   it('uses sysexits-style codes', () => {
-    expect(exitCodes).toEqual({ ok: 0, usage: 64, unavailable: 69, interrupted: 130 })
+    expect(exitCodes).toEqual({ ok: 0, usage: 64, unavailable: 69, dependencyMissing: 70, interrupted: 130 })
   })
 })
 
@@ -21,7 +22,7 @@ describe('usageError', () => {
   it('maps to exit 64 and prefixes the reason', () => {
     const r = usageError('no agent command given')
     expect(r.exitCode).toBe(64)
-    expect(r.message).toBe('thunderbolt-acp-bridge: no agent command given')
+    expect(r.message).toBe('thunderbolt-stdio-bridge: no agent command given')
   })
 })
 
@@ -69,6 +70,27 @@ describe('serverError', () => {
     const r = serverError({ code: 'EACCES' }, {})
     expect(r.exitCode).toBe(69)
     expect(r.message).toContain('EACCES')
+  })
+})
+
+describe('tunnelError', () => {
+  it('maps a missing cloudflared (ENOENT) to an install hint + exit 70', () => {
+    const r = tunnelError({ code: 'ENOENT' })
+    expect(r.exitCode).toBe(70)
+    expect(r.message).toContain('cloudflared not found')
+    expect(r.message).toContain('install it')
+  })
+
+  it('maps an abnormal cloudflared exit to exit 69 with the reason', () => {
+    const r = tunnelError({ reason: 'exited early (code 1)' })
+    expect(r.exitCode).toBe(69)
+    expect(r.message).toContain('exited early (code 1)')
+  })
+
+  it('falls back for an unknown tunnel error code', () => {
+    const r = tunnelError({ code: 'EPIPE' })
+    expect(r.exitCode).toBe(69)
+    expect(r.message).toContain('EPIPE')
   })
 })
 

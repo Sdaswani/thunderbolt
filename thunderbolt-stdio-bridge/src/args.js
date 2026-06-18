@@ -3,25 +3,33 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /**
- * Pure CLI argument parser for thunderbolt-acp-bridge.
+ * Pure CLI argument parser for thunderbolt-stdio-bridge.
  *
  * Everything BEFORE the `--` separator is a bridge flag. Everything AFTER it is
  * the agent command + argv, passed verbatim to `spawn` (no shell, no quoting).
  * A standalone `--` is mandatory to separate bridge flags from the agent argv.
  */
 
-const HELP_TEXT = `thunderbolt-acp-bridge — relay a local stdio ACP agent to a localhost WebSocket for Thunderbolt.
+const HELP_TEXT = `thunderbolt-stdio-bridge — bridge a local stdio agent or MCP server to Thunderbolt over localhost.
+
+In ACP mode it relays a stdio ACP agent over a WebSocket; in MCP mode it serves a
+local stdio MCP server over Streamable HTTP at /mcp.
 
 Usage:
-  npx thunderbolt-acp-bridge [options] -- <agent-command> [agent-args...]
+  npx thunderbolt-stdio-bridge --mode <acp|mcp> [options] -- <command> [args...]
 
-Everything after \`--\` is the agent command, passed straight to the OS (no shell).
+Everything after \`--\` is the agent/server command, passed straight to the OS (no shell).
 
 Options:
-  --port <n>            WebSocket port (default: ephemeral, auto-picked)
+  --mode <acp|mcp>     REQUIRED. Protocol face: acp = WebSocket relay for an ACP
+                       agent, mcp = MCP Streamable HTTP server at /mcp
+  --tunnel             (mcp only) Expose the MCP face over a public cloudflared
+                       tunnel with a mandatory auto-generated bearer secret.
+                       Rejected with --mode acp (ACP has no client auth).
+  --port <n>            WebSocket/HTTP port (default: ephemeral, auto-picked)
   --host <addr>         Bind address (default: 127.0.0.1, loopback only)
-  --allow-origin <o>    Extra WebSocket Origin to accept (repeatable). The
-                        Thunderbolt app origins are allowed by default.
+  --allow-origin <o>    Extra Origin to accept (repeatable). The Thunderbolt app
+                        origins are allowed by default.
   --allow-any-origin    Accept ANY Origin (disables the cross-origin guard).
                         Escape hatch for dev/self-host only — not recommended.
   --verbose             Per-frame logging (method + size, redacted; never content)
@@ -29,10 +37,12 @@ Options:
   --help                Show this help and exit
   --version             Print the version and exit
 
-Example:
-  npx thunderbolt-acp-bridge -- npx -y @zed-industries/claude-code-acp
+Examples:
+  npx thunderbolt-stdio-bridge --mode acp -- npx -y @zed-industries/claude-code-acp
+  npx thunderbolt-stdio-bridge --mode mcp -- npx -y @modelcontextprotocol/server-everything
 
-Paste the printed ws://127.0.0.1:PORT URL into Thunderbolt → Add Custom Agent.`
+Paste the printed URL into Thunderbolt — the ws://127.0.0.1:PORT URL goes under
+Add Custom Agent (acp); the http://127.0.0.1:PORT/mcp URL goes under Add MCP Server (mcp).`
 
 /**
  * Parse process argv (the slice AFTER node + script path) into a structured
@@ -44,6 +54,8 @@ Paste the printed ws://127.0.0.1:PORT URL into Thunderbolt → Add Custom Agent.
  *   version: boolean,
  *   verbose: boolean,
  *   json: boolean,
+ *   mode: 'acp' | 'mcp' | null,
+ *   tunnel: boolean,
  *   host: string,
  *   port: number,
  *   allowOrigins: string[],
@@ -59,6 +71,8 @@ export const parseArgs = (argv) => {
     version: false,
     verbose: false,
     json: false,
+    mode: null,
+    tunnel: false,
     host: '127.0.0.1',
     port: 0,
     allowOrigins: [],
@@ -98,6 +112,20 @@ export const parseArgs = (argv) => {
       i += 1
       continue
     }
+    if (flag === '--tunnel') {
+      result.tunnel = true
+      i += 1
+      continue
+    }
+    if (flag === '--mode' || flag.startsWith('--mode=')) {
+      const value = flag.includes('=') ? flag.slice('--mode='.length) : flags[i + 1]
+      if (!value) return { ...result, error: '--mode requires a value (acp or mcp)' }
+      if (value !== 'acp' && value !== 'mcp')
+        return { ...result, error: `invalid --mode: ${value} (expected acp or mcp)` }
+      result.mode = value
+      i += flag.includes('=') ? 1 : 2
+      continue
+    }
     if (flag === '--allow-origin' || flag.startsWith('--allow-origin=')) {
       const value = flag.includes('=') ? flag.slice('--allow-origin='.length) : flags[i + 1]
       if (!value) return { ...result, error: '--allow-origin requires a value' }
@@ -125,7 +153,7 @@ export const parseArgs = (argv) => {
     }
     if (!flag.startsWith('-')) {
       // A bare token before `--` almost always means the user forgot the
-      // separator (e.g. `thunderbolt-acp-bridge my-agent` instead of `thunderbolt-acp-bridge -- my-agent`).
+      // separator (e.g. `thunderbolt-stdio-bridge my-agent` instead of `thunderbolt-stdio-bridge -- my-agent`).
       return { ...result, error: 'no agent command given (did you forget the `--` before the agent command?)' }
     }
     return { ...result, error: `unknown option: ${flag}` }
@@ -133,6 +161,21 @@ export const parseArgs = (argv) => {
 
   if (separatorIndex === -1 || agentCmd.length === 0) {
     return { ...result, error: 'no agent command given' }
+  }
+
+  // --mode is part of the interface, not a silent default: a stdio child is
+  // either an ACP agent (ws relay) or an MCP server (http face), and guessing
+  // wrong would relay the wrong protocol. Require the caller to say which.
+  if (result.mode === null) {
+    return { ...result, error: '--mode is required (acp or mcp)' }
+  }
+
+  // A public cloudflared tunnel over ACP would be an unauthenticated
+  // remote-code primitive: ACP carries no client auth, so anyone who learns the
+  // tunnel URL could drive the agent. MCP gates the tunnel behind a mandatory
+  // bearer; ACP has no such gate and stays localhost-only.
+  if (result.tunnel && result.mode === 'acp') {
+    return { ...result, error: '--tunnel is not allowed with --mode acp (ACP has no client auth; a public tunnel would expose an unauthenticated agent — ACP is localhost-only). Use --mode mcp to tunnel.' }
   }
 
   return result

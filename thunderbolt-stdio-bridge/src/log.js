@@ -3,7 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /**
- * PII-safe logging for thunderbolt-acp-bridge.
+ * PII-safe logging for thunderbolt-stdio-bridge.
  *
  * The cardinal rule: log objects are built from an ALLOWLIST of extracted
  * scalars. The raw ACP frame is NEVER handed to the logger, so prompt text,
@@ -14,9 +14,12 @@
  * id, byteSize, status, errorCode, lifecycle, closeCode, origin (sanitized).
  */
 
-/** Known ACP method names. Anything else is collapsed to 'other' so a method
- *  string (which is structural, not content) can't smuggle data into a log. */
+/** Known ACP + MCP method names. Anything else is collapsed to 'other' so a
+ *  method string (which is structural, not content) can't smuggle data into a
+ *  log. Notification methods (e.g. notifications/message) collapse to 'other'
+ *  via the `notifications/` family below. */
 const KNOWN_METHODS = new Set([
+  // ACP
   'initialize',
   'authenticate',
   'session/new',
@@ -32,16 +35,39 @@ const KNOWN_METHODS = new Set([
   'terminal/release',
   'terminal/wait_for_exit',
   'terminal/kill',
+  // MCP (initialize is shared with ACP above)
+  'ping',
+  'tools/list',
+  'tools/call',
+  'resources/list',
+  'resources/read',
+  'resources/templates/list',
+  'resources/subscribe',
+  'resources/unsubscribe',
+  'prompts/list',
+  'prompts/get',
+  'completion/complete',
+  'logging/setLevel',
+  'roots/list',
+  'sampling/createMessage',
+  'elicitation/create',
 ])
 
 /**
- * Coerce an arbitrary method string to the known enum or 'other'.
+ * Coerce an arbitrary method string to the known enum, the structural
+ * `notifications/*` label, or 'other' — so a method string (attacker-influenced
+ * on the MCP face) can never smuggle content into a log line. Shared by both faces.
  * @param {unknown} method
  * @returns {string | undefined}
  */
-const safeMethod = (method) => {
+export const safeMethod = (method) => {
   if (typeof method !== 'string') return undefined
-  return KNOWN_METHODS.has(method) ? method : 'other'
+  if (KNOWN_METHODS.has(method)) return method
+  // The notifications/* family is structural (spec-defined) and unbounded only
+  // in its suffix; collapse to a single safe label rather than 'other' so logs
+  // stay readable without copying an arbitrary suffix into the line.
+  if (method.startsWith('notifications/')) return 'notifications/*'
+  return 'other'
 }
 
 /** Max length of a string id before it's truncated. A JSON-RPC id is meant to
@@ -66,10 +92,11 @@ const safeId = (id) => {
 
 /**
  * Classify a parsed JSON-RPC object into a kind without reading its payload.
+ * Shared by the ACP log extractor and the MCP face's PII-safe event extractor.
  * @param {Record<string, unknown>} obj
  * @returns {'request' | 'response' | 'notification' | 'error'}
  */
-const classifyKind = (obj) => {
+export const classifyKind = (obj) => {
   if ('error' in obj) return 'error'
   if ('method' in obj) return 'id' in obj ? 'request' : 'notification'
   return 'response'
@@ -121,7 +148,9 @@ export const extractLogEvent = ({ direction, line }) => {
   if (kind === 'error') {
     const errorObj = obj.error
     const errorCode =
-      errorObj && typeof errorObj === 'object' && typeof (/** @type {Record<string, unknown>} */ (errorObj).code) === 'number'
+      errorObj &&
+      typeof errorObj === 'object' &&
+      typeof (/** @type {Record<string, unknown>} */ (errorObj).code) === 'number'
         ? /** @type {number} */ (/** @type {Record<string, unknown>} */ (errorObj).code)
         : undefined
     return { ...event, status: 'error', errorCode }

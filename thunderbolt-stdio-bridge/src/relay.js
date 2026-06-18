@@ -27,24 +27,31 @@
  */
 
 /**
- * Determine whether a stdout line is a forwardable JSON-RPC frame.
- *
- * A real ACP frame is ALWAYS a JSON object. Bare scalars/arrays (`123`, `"x"`,
- * `true`, `null`, `[]`) are never valid JSON-RPC, so they're junk — drop them
- * rather than forward them to Thunderbolt's unguarded parse.
+ * Parse a line as a JSON-RPC object, returning the object or `null` for an empty
+ * line, invalid JSON, or a non-object (a bare scalar/array `123`/`"x"`/`[]` is
+ * never a valid JSON-RPC frame). Shared by the ACP ws relay and the MCP face.
+ * @param {string} line
+ * @returns {Record<string, unknown> | null}
+ */
+export const parseRpcObject = (line) => {
+  const trimmed = line.trim()
+  if (trimmed.length === 0) return null
+  try {
+    const parsed = JSON.parse(trimmed)
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Whether a stdout line is a forwardable JSON-RPC frame: a real ACP frame is
+ * ALWAYS a JSON object, so drop bare scalars/arrays rather than forward them to
+ * Thunderbolt's unguarded parse.
  * @param {string} line
  * @returns {boolean}
  */
-const isForwardableJson = (line) => {
-  const trimmed = line.trim()
-  if (trimmed.length === 0) return false
-  try {
-    const parsed = JSON.parse(trimmed)
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-  } catch {
-    return false
-  }
-}
+const isForwardableJson = (line) => parseRpcObject(line) !== null
 
 /**
  * Wire the agent→ws direction: for each line emitted by the readline interface,
