@@ -12,6 +12,7 @@ import { useContentView } from '@/content-view/context'
 import { ObjectSidebarContent } from '@/content-view/object-sidebar-content'
 import { SidebarWebview } from '@/content-view/sidebar-webview'
 import { Sideview } from '@/content-view/sideview'
+import { CitationsPanel } from '@/components/chat/citations-sidebar'
 import { useIsMobile } from '@/hooks/use-mobile'
 import { isTauri } from '@/lib/platform'
 import { useSettings } from '@/hooks/use-settings'
@@ -164,6 +165,7 @@ export default function Page() {
                 )}
                 {state.type === 'object-view' && <ObjectSidebarContent content={state.data} onClose={close} />}
                 {state.type === 'sideview' && <Sideview />}
+                {state.type === 'citations' && <CitationsPanel data={state.data} onClose={close} />}
               </m.div>
             )}
           </AnimatePresence>

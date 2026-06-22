@@ -43,7 +43,6 @@ import { WelcomeDialog } from './components/welcome-dialog'
 import { PendingDeviceModal } from './components/pending-device-modal'
 import { UpdateNotification } from './components/update-notification'
 import { ExternalLinkDialogProvider } from './components/chat/markdown-utils'
-import { CitationsSidebarProvider } from './components/chat/citations-sidebar'
 import { ContentViewProvider } from './content-view/context'
 import { useAppInitialization } from './hooks/use-app-initialization'
 import { useCredentialEvents } from './hooks/use-credential-events'
@@ -257,9 +256,7 @@ export const App = () => {
                             <SidebarProvider>
                               <ContentViewProvider>
                                 <ExternalLinkDialogProvider>
-                                  <CitationsSidebarProvider>
-                                    <AppContent initData={initData} />
-                                  </CitationsSidebarProvider>
+                                  <AppContent initData={initData} />
                                 </ExternalLinkDialogProvider>
                               </ContentViewProvider>
                             </SidebarProvider>

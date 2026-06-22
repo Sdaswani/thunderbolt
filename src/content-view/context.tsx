@@ -8,6 +8,7 @@ import { trackEvent } from '@/lib/posthog'
 import { getToolMetadataSync } from '@/lib/tool-metadata'
 import { formatToolOutput } from '@/lib/utils'
 import type { UIMessageMetadata } from '@/types'
+import type { DocumentCitationSource } from '@/types/citation'
 import { getToolName, type DynamicToolUIPart, type ReasoningUIPart, type ToolUIPart } from 'ai'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import type { SidebarWebviewConfig } from './use-sidebar-webview'
@@ -25,11 +26,21 @@ export type SideviewData = {
   sideviewId: string
 }
 
+/** The document citations shown in the content view, scoped to one message. */
+export type CitationsViewData = {
+  /** Message whose citations are shown — lets callers swap/replace by message. */
+  messageId: string
+  sources: DocumentCitationSource[]
+  /** `fileId` of the row to highlight (e.g. the inline marker that was clicked). */
+  highlightId?: string
+}
+
 type ContentViewState =
   | { type: null; data: null }
   | { type: 'object-view'; data: ObjectViewData }
   | { type: 'preview'; data: SidebarWebviewConfig }
   | { type: 'sideview'; data: SideviewData }
+  | { type: 'citations'; data: CitationsViewData }
 
 type ContentViewContextType = {
   state: ContentViewState
@@ -37,6 +48,8 @@ type ContentViewContextType = {
   showPreview: (url: string) => void
   /** Open a typed sideview (e.g. `'document'`). Passing `null` clears the view. */
   showSideview: (sideviewType: string | null, sideviewId: string | null) => void
+  /** Open the document citations panel for a message. */
+  showCitations: (data: CitationsViewData) => void
   close: () => void
   isOpen: boolean
   previewHidden: boolean
@@ -99,6 +112,11 @@ export const ContentViewProvider = ({ children }: { children: ReactNode }) => {
     setState({ type: 'sideview', data: { sideviewType, sideviewId } })
   }, [])
 
+  const showCitations = useCallback((data: CitationsViewData) => {
+    trackEvent('content_view_open', { view_type: 'citations' })
+    setState({ type: 'citations', data })
+  }, [])
+
   const close = useCallback(() => {
     if (state.type !== null) {
       trackEvent('content_view_close', { view_type: state.type })
@@ -122,6 +140,7 @@ export const ContentViewProvider = ({ children }: { children: ReactNode }) => {
         showObjectView,
         showPreview,
         showSideview,
+        showCitations,
         close,
         isOpen: state.type !== null,
         previewHidden,
@@ -167,6 +186,11 @@ export const usePreview = () => {
 /** Returns showPreview when inside ContentViewProvider, undefined otherwise. */
 export const useShowPreview = (): ((url: string) => void) | undefined => {
   return useContext(ContentViewContext)?.showPreview
+}
+
+/** Returns showCitations when inside ContentViewProvider, undefined otherwise (callers can no-op). */
+export const useShowCitations = (): ((data: CitationsViewData) => void) | undefined => {
+  return useContext(ContentViewContext)?.showCitations
 }
 
 /** Returns setPreviewHidden when inside ContentViewProvider, undefined otherwise. */

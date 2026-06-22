@@ -7,8 +7,9 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sh
 import { useIsMobile } from '@/hooks/use-mobile'
 import { type CitationSource, isDocumentCitation } from '@/types/citation'
 import { memo, useState } from 'react'
+import { useShowCitations } from '@/content-view/context'
 import { useCitationPopover } from './citation-popover'
-import { useCitationMessage, useCitationsSidebar } from './citations-sidebar-context'
+import { useCitationMessage } from './citations-sidebar-context'
 import { SourceList } from './source-list'
 
 type CitationBadgeProps = {
@@ -84,18 +85,23 @@ const BadgeButton = ({ sources, isOpen, onToggle }: BadgeButtonProps) => {
 
 const ManagedBadge = memo(({ sources, citationId }: { sources: CitationSource[]; citationId: number }) => {
   const ctx = useCitationPopover()!
-  const sidebar = useCitationsSidebar()
+  const showCitations = useShowCitations()
   const message = useCitationMessage()
   const isOpen = ctx.popover?.citationId === citationId
 
   const primary = sources.find((s) => s.isPrimary) ?? sources[0]
 
   const toggle = (element: HTMLElement) => {
-    // Document citations open the message's full citation set in the sidebar
-    // (highlighting the clicked source) instead of the inline popover; web
-    // citations fall through to the inline popover.
-    if (sidebar && message && primary && isDocumentCitation(primary)) {
-      sidebar.open({
+    // Citation presentation is intentionally split by source richness — this is
+    // one data model with two presentations, NOT a divergent path. Document
+    // citations carry page numbers, retrieval relevance, and an in-app viewer,
+    // so they open the richer content-view panel (highlighting the clicked
+    // source); web citations are just title + link, so they stay in the
+    // lightweight inline popover. The OUP-specific richness (relevance bars)
+    // self-gates on `score` in citation-row, so non-OUP document pipelines get
+    // the same panel without it. See THU-608.
+    if (showCitations && message && primary && isDocumentCitation(primary)) {
+      showCitations({
         messageId: message.messageId,
         sources: message.sources,
         highlightId: primary.documentMeta.fileId,
