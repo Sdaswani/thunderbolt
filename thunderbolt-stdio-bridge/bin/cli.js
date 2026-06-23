@@ -46,8 +46,13 @@ const installSignalHandlers = (getStop) => {
   process.on('SIGTERM', onSignal)
 }
 
-/** Read the package version without importing JSON (Node version-portable). */
+/**
+ * Read the package version. In a normal Node install this reads package.json
+ * relative to the script; in the bundled CLI (no surrounding files) the build
+ * inlines the version as `__BRIDGE_VERSION__` via esbuild `define`.
+ */
 const readVersion = () => {
+  if (typeof __BRIDGE_VERSION__ === 'string') return __BRIDGE_VERSION__
   const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'))
   return pkg.version
 }

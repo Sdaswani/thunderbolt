@@ -1,7 +1,7 @@
 {
   "name": "thunderbolt-stdio-bridge",
   "version": "0.1.0",
-  "description": "Tiny CLI that bridges a local stdio agent to Thunderbolt over localhost (today: ACP agents via WebSocket; MCP support via --mode is coming).",
+  "description": "Tiny CLI that bridges a local stdio agent or MCP server to Thunderbolt over localhost (ACP agents via WebSocket, MCP servers via Streamable HTTP).",
   "type": "module",
   "bin": {
     "thunderbolt-stdio-bridge": "bin/cli.js"
@@ -12,14 +12,18 @@
     "README.md"
   ],
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "build": "node scripts/build-cli.mjs"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=18.14.1"
   },
   "license": "MPL-2.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
   }
 }

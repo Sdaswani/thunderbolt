@@ -1,0 +1,74 @@
+name: Build stdio-bridge CLI
+
+# Builds the thunderbolt-stdio-bridge as a TINY, self-contained CLI: a single
+# esbuild bundle that runs on the system node (no embedded runtime, no npm fetch
+# at runtime). The bundle is portable JS, so ONE job builds the artifact for
+# every OS/arch — no per-target matrix, no signing.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'thunderbolt-stdio-bridge/**'
+      - '.github/workflows/stdio-bridge-build.yml'
+  pull_request:
+    paths:
+      - 'thunderbolt-stdio-bridge/**'
+      - '.github/workflows/stdio-bridge-build.yml'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: thunderbolt-stdio-bridge
+
+jobs:
+  build:
+    name: Build & smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.14
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun run build
+
+      - name: Smoke test (--help on system node)
+        run: node dist/bridge.cjs --help
+
+      # Boot each mode against a dummy long-lived child so the bundled paths that
+      # matter — ws + MCP transport construction + socket bind + child spawn — are
+      # actually exercised, not just argument parsing.
+      - name: Smoke test (ACP + MCP boot)
+        run: |
+          set -e
+          boot() {
+            node dist/bridge.cjs --mode "$1" --port 0 -- node -e "setInterval(() => {}, 1e9)" >"/tmp/$1.log" 2>&1 &
+            local pid=$!
+            sleep 2
+            kill "$pid" 2>/dev/null || true
+            grep -qi "$2" "/tmp/$1.log" || { echo "FAIL: $1 did not boot"; cat "/tmp/$1.log"; exit 1; }
+            echo "OK: $1 booted"
+          }
+          boot acp listening
+          boot mcp mcp-listening
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: thunderbolt-bridge
+          # bridge.cjs is the executable bundle (shebang + .cjs = portable CJS,
+          # no sibling metadata needed); the .cmd is the Windows launcher.
+          path: |
+            thunderbolt-stdio-bridge/dist/bridge.cjs
+            thunderbolt-stdio-bridge/dist/thunderbolt-bridge.cmd
+          if-no-files-found: error

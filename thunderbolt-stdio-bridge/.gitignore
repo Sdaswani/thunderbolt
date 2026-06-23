@@ -1,0 +1,4 @@
+node_modules/
+
+# Build artifacts — the CLI bundle is built/shipped, never committed.
+dist/
