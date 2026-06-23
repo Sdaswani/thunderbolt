@@ -18,6 +18,7 @@ import { StatusCard } from '@/components/ui/status-card'
 import { getPlatform, isTauri } from '@/lib/platform'
 import { testAcpConnection as defaultTestAcpConnection } from '@/acp'
 import { isLoopbackUrl } from '@/acp/transports/is-loopback'
+import type { Agent } from '@/types/acp'
 
 /** Maps a user-entered URL to the ACP transport flavor we support, or `null`
  *  when the scheme is unsupported (or the URL is malformed). WebSocket is the
@@ -73,6 +74,11 @@ type AddCustomAgentDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSubmit: (payload: AddCustomAgentPayload) => Promise<void> | void
+  /** When provided, the dialog renders in edit mode: title and submit label
+   *  switch, and initial state is seeded from this agent. Pass `null`/omit for
+   *  the create flow. The parent should also vary the dialog's React `key` on
+   *  the agent id so switching between agents resets the reducer cleanly. */
+  editingAgent?: Agent | null
   /** Test/DI override for the iOS guard. Production callers omit this. */
   isIos?: () => boolean
   /** Test/DI override for the connection probe. Production callers omit this. */
@@ -98,9 +104,9 @@ type AgentDialogAction =
   | { type: 'START_CONNECTION_TEST' }
   | { type: 'CONNECTION_TEST_SUCCESS' }
   | { type: 'CONNECTION_TEST_FAILURE'; error: string }
-  | { type: 'RESET' }
+  | { type: 'RESET'; next: AgentDialogState }
 
-const initialState: AgentDialogState = {
+const emptyState: AgentDialogState = {
   name: '',
   url: '',
   description: '',
@@ -110,13 +116,26 @@ const initialState: AgentDialogState = {
   connectionError: null,
 }
 
+/** Builds the initial reducer state. With an agent, the form is seeded with its
+ *  current values (a connection test is still required before save). Without,
+ *  the form starts blank for the create flow. */
+const buildInitialState = (agent: Agent | null): AgentDialogState =>
+  agent
+    ? {
+        ...emptyState,
+        name: agent.name,
+        url: agent.url ?? '',
+        description: agent.description ?? '',
+      }
+    : emptyState
+
 const agentDialogReducer = (state: AgentDialogState, action: AgentDialogAction): AgentDialogState => {
   switch (action.type) {
     case 'SET_NAME':
       return { ...state, name: action.value }
     case 'SET_URL':
       // Editing the URL invalidates any prior connection result — the user is
-      // targeting a (potentially) different endpoint, so Add must be re-gated.
+      // targeting a (potentially) different endpoint, so submit must be re-gated.
       return { ...state, url: action.value, connectionStatus: 'idle', connectionError: null }
     case 'SET_DESCRIPTION':
       return { ...state, description: action.value }
@@ -131,7 +150,7 @@ const agentDialogReducer = (state: AgentDialogState, action: AgentDialogAction):
     case 'CONNECTION_TEST_FAILURE':
       return { ...state, isTestingConnection: false, connectionStatus: 'error', connectionError: action.error }
     case 'RESET':
-      return initialState
+      return action.next
     default:
       return state
   }
@@ -141,20 +160,25 @@ export const AddCustomAgentDialog = ({
   open,
   onOpenChange,
   onSubmit,
+  editingAgent,
   isIos,
   testAcpConnection = defaultTestAcpConnection,
 }: AddCustomAgentDialogProps) => {
-  const [state, dispatch] = useReducer(agentDialogReducer, initialState)
+  const isEditing = !!editingAgent
+  // Lazy init seeds the form from the agent on first mount. The parent varies
+  // the React `key` on agent id to remount when switching between editing
+  // targets, so this initializer fires fresh each time.
+  const [state, dispatch] = useReducer(agentDialogReducer, editingAgent ?? null, buildInitialState)
 
   const trimmedName = state.name.trim()
   const trimmedUrl = state.url.trim()
   const trimmedDescription = state.description.trim()
   const validation = validateAgentUrl(trimmedUrl, isIos)
   // Surface an invalid-URL error at render time (once the field is non-empty)
-  // so the user sees why Test Connection is unavailable and Add stays gated.
+  // so the user sees why Test Connection is unavailable and submit stays gated.
   const urlError = trimmedUrl.length > 0 && 'error' in validation ? validation.error : null
-  // Add is gated behind a successful Test Connection — a valid name, URL, and a
-  // confirmed connection are all required before the agent can be created.
+  // Submit is gated behind a successful Test Connection — a valid name, URL,
+  // and a confirmed connection are all required before saving.
   const canSubmit =
     trimmedName.length > 0 && trimmedUrl.length > 0 && state.connectionStatus === 'success' && !state.submitting
   // The probe is only meaningful once the URL is a valid WebSocket endpoint.
@@ -165,7 +189,9 @@ export const AddCustomAgentDialog = ({
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
-      dispatch({ type: 'RESET' })
+      // On close, reset back to the seeded state (empty for create, the agent's
+      // values for edit) so a reopen without remount lands in a predictable shape.
+      dispatch({ type: 'RESET', next: buildInitialState(editingAgent ?? null) })
     }
     onOpenChange(next)
   }
@@ -194,7 +220,7 @@ export const AddCustomAgentDialog = ({
       transport: validation.transport,
     })
     dispatch({ type: 'END_SUBMIT' })
-    dispatch({ type: 'RESET' })
+    dispatch({ type: 'RESET', next: buildInitialState(editingAgent ?? null) })
     onOpenChange(false)
   }
 
@@ -202,9 +228,11 @@ export const AddCustomAgentDialog = ({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <ResponsiveModalContentComposable className="sm:max-w-[500px]">
         <ResponsiveModalHeader>
-          <ResponsiveModalTitle>Add Custom Agent</ResponsiveModalTitle>
+          <ResponsiveModalTitle>{isEditing ? 'Edit Custom Agent' : 'Add Custom Agent'}</ResponsiveModalTitle>
           <ResponsiveModalDescription>
-            Connect a remote agent that speaks the Agent Client Protocol.
+            {isEditing
+              ? 'Update the connection details for this remote agent.'
+              : 'Connect a remote agent that speaks the Agent Client Protocol.'}
           </ResponsiveModalDescription>
         </ResponsiveModalHeader>
         <div className="grid gap-4 pt-4 pb-2">
@@ -299,7 +327,7 @@ export const AddCustomAgentDialog = ({
             Cancel
           </Button>
           <Button onClick={handleSubmit} disabled={!canSubmit}>
-            Add Agent
+            {isEditing ? 'Save Changes' : 'Add Agent'}
           </Button>
         </div>
       </ResponsiveModalContentComposable>
