@@ -107,6 +107,7 @@ export const modelsTable = sqliteTable(
     defaultHash: text('default_hash'),
     vendor: text('vendor'),
     description: text('description'),
+    apiKey: text('api_key'),
     userId: text('user_id'),
     workspaceId: text('workspace_id'),
     scope: text('scope', { enum: ['workspace', 'user'] }).default('workspace'),

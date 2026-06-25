@@ -257,6 +257,7 @@ export const modelsTable = powersyncSchema.table(
     defaultHash: text('default_hash'),
     vendor: text('vendor'),
     description: text('description'),
+    apiKey: text('api_key'),
     userId: text('user_id').references(() => user.id, { onDelete: 'set null' }),
     workspaceId: text('workspace_id')
       .notNull()
