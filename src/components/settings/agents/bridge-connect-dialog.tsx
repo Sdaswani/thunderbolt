@@ -12,8 +12,9 @@ import {
   ResponsiveModalHeader,
   ResponsiveModalTitle,
 } from '@/components/ui/responsive-modal'
-import { composeBridgeCommand, composeInstallCommand } from '@/lib/agent-bridge-command'
+import { composeBridgeCommand } from '@/lib/agent-bridge-command'
 import type { RegistryEntry } from '@/types/registry'
+import { BridgeInstallStep } from './bridge-install-step'
 import { CopyableCommand } from './copyable-command'
 
 type BridgeConnectDialogProps = {
@@ -88,7 +89,7 @@ export const BridgeConnectDialog = ({ entry, open, onOpenChange }: BridgeConnect
         {bridgeCommand ? (
           <div className="flex flex-col gap-5 pt-2">
             <Step index={1} title="Install the bridge (once)">
-              <CopyableCommand command={composeInstallCommand()} testId="install" />
+              <BridgeInstallStep />
             </Step>
             <Step index={2} title="Run the bridge">
               <p className="text-[length:var(--font-size-sm)] text-muted-foreground">

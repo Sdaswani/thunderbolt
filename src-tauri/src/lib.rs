@@ -48,6 +48,7 @@ pub fn create_app() -> tauri::Builder<tauri::Wry> {
             commands::capabilities,
             commands::set_interface_style,
             commands::start_oauth_server,
+            commands::install_bridge,
         ]);
 
     #[cfg(debug_assertions)]

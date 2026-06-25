@@ -94,6 +94,56 @@ pub fn capabilities() -> Capabilities {
     }
 }
 
+// === Zeus bridge installer ===================================================================
+
+/// The canonical one-liner that installs the `zeus` bridge onto the user's PATH —
+/// identical to what the connect dialog shows for manual install.
+const ZEUS_INSTALL_CMD: &str =
+    "curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash";
+
+/// Runs the `zeus` bridge installer from the desktop connect dialog so the user
+/// can install the bridge without opening a terminal. Spawns the canonical
+/// `curl … | bash` one-liner through a login shell (so `node`/`npm`/`curl` and the
+/// install target dir are on PATH), off the async runtime so the UI stays
+/// responsive. Returns the installer's stdout on success, or its error output on
+/// a non-zero exit. Desktop only — the renderer gates the call behind `isDesktop()`.
+#[cfg(desktop)]
+#[command]
+pub async fn install_bridge() -> Result<String, String> {
+    let output = tauri::async_runtime::spawn_blocking(|| {
+        std::process::Command::new("bash")
+            .args(["-lc", ZEUS_INSTALL_CMD])
+            .output()
+    })
+    .await
+    .map_err(|e| format!("installer task failed: {e}"))?
+    .map_err(|e| format!("failed to spawn installer: {e}"))?;
+
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let detail = if stderr.trim().is_empty() {
+        stdout.trim()
+    } else {
+        stderr.trim()
+    };
+    Err(format!(
+        "installer exited with status {}: {}",
+        output.status.code().unwrap_or(-1),
+        detail
+    ))
+}
+
+/// Mobile builds have no shell/terminal, so the installer is desktop-only.
+#[cfg(not(desktop))]
+#[command]
+pub async fn install_bridge() -> Result<String, String> {
+    Err("The bridge installer is only available on desktop.".to_string())
+}
+
 // === OAuth loopback server ===================================================================
 
 /// Ports pre-registered as redirect URIs in the Google / Microsoft OAuth console.

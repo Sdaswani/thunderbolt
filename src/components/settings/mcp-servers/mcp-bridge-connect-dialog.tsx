@@ -13,7 +13,8 @@ import {
   ResponsiveModalHeader,
   ResponsiveModalTitle,
 } from '@/components/ui/responsive-modal'
-import { composeInstallCommand, composeMcpBridgeCommand } from '@/lib/agent-bridge-command'
+import { composeMcpBridgeCommand } from '@/lib/agent-bridge-command'
+import { BridgeInstallStep } from '@/components/settings/agents/bridge-install-step'
 import { CopyableCommand } from '@/components/settings/agents/copyable-command'
 
 type McpBridgeConnectDialogProps = {
@@ -56,7 +57,7 @@ export const McpBridgeConnectDialog = ({ open, onOpenChange }: McpBridgeConnectD
         </ResponsiveModalHeader>
         <div className="flex flex-col gap-5 pt-2">
           <Step index={1} title="Install the bridge (once)">
-            <CopyableCommand command={composeInstallCommand()} testId="install" />
+            <BridgeInstallStep />
           </Step>
           <Step index={2} title="Run the bridge wrapping your server">
             <Label htmlFor="mcp-stdio-command" className="text-[length:var(--font-size-sm)] text-muted-foreground">
