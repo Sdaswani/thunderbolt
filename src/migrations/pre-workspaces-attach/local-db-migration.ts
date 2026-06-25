@@ -107,13 +107,63 @@ export type RunLocalDbMigrationResult = {
   durationMs: number
   /** Per-table count of rows that the INSERT OR IGNORE actually persisted. */
   rowsInsertedByTable: Record<string, number>
+  /**
+   * Count of `models.api_key` cells stamped from the legacy `models_secrets`
+   * table (THU-579: api keys live on the synced `models` table again).
+   * Zero if the legacy DB never had the secrets table.
+   */
+  modelApiKeysCopied: number
 }
 
 const emptyResult = (durationMs: number): RunLocalDbMigrationResult => ({
   ranAttach: false,
   durationMs,
   rowsInsertedByTable: {},
+  modelApiKeysCopied: 0,
 })
+
+/**
+ * Stamp `models.api_key` from `legacy.models_secrets.api_key` for the migrated
+ * personal-workspace rows. Returns the number of rows updated.
+ *
+ * THU-505 stored api keys in a local-only `models_secrets` table; THU-579
+ * reverted that and moved the column back onto the synced `models` table.
+ * Existing users still have a populated `models_secrets` in their legacy DB —
+ * this copies those values into the new schema before the legacy DB is
+ * detached.
+ *
+ * Strictly non-clobbering:
+ *   - Only writes rows whose `models.api_key` is currently NULL.
+ *   - Only reads legacy rows whose `api_key` is non-NULL — never overwrites
+ *     a populated value with NULL.
+ *
+ * Either guard alone would be enough for the common rollout case, but together
+ * they make the migration safe to re-run against any partially-migrated state:
+ * a sync that pulled the key down before the migration ran, a user who set the
+ * key on the new build before the legacy file was processed, etc.
+ *
+ * No-op when the legacy DB never had the secrets table (very old builds, or
+ * a user who never set an api key).
+ */
+const stampModelApiKeysFromLegacy = async (db: AnyDrizzleDatabase, personalWorkspaceId: string): Promise<number> => {
+  const legacyCols = await fetchColumnNames(db, 'models_secrets', 'legacy')
+  if (legacyCols.length === 0) {
+    return 0
+  }
+  const query = `UPDATE ${quoteId('models')} SET ${quoteId('api_key')} = (
+    SELECT ${quoteId('api_key')} FROM legacy.${quoteId('models_secrets')}
+    WHERE legacy.${quoteId('models_secrets')}.${quoteId('id')} = ${quoteId('models')}.${quoteId('id')}
+  )
+  WHERE ${quoteId('id')} IN (
+    SELECT ${quoteId('id')} FROM legacy.${quoteId('models_secrets')}
+    WHERE ${quoteId('api_key')} IS NOT NULL
+  )
+    AND ${quoteId('workspace_id')} = ${quoteLiteral(personalWorkspaceId)}
+    AND ${quoteId('api_key')} IS NULL
+  RETURNING ${quoteId('id')}`
+  const result = (await db.all(sql.raw(query))) as readonly unknown[][]
+  return result.length
+}
 
 export const runLocalDbMigration = async ({
   newDb,
@@ -135,10 +185,19 @@ export const runLocalDbMigration = async ({
 
   await newDb.run(sql.raw(`ATTACH DATABASE ${quoteLiteral(legacyDbAttachPath)} AS legacy`))
   const rowsInsertedByTable: Record<string, number> = {}
+  // `!` (definite-assignment assertion) because the try/finally guarantees
+  // assignment on the success path — finally re-throws any error, so the
+  // return below is unreachable until the await on the last line of the try
+  // resolves. TypeScript's flow analysis can't model finally-rethrow, so we
+  // assert.
+  let modelApiKeysCopied!: number
   try {
     for (const table of allLegacyTables) {
       rowsInsertedByTable[table.name] = await copyTable(newDb, table, personalWorkspaceId)
     }
+    // Must run AFTER `models` has been copied — the UPDATE matches by PK on
+    // the new `models` rows, which only exist after the table walk above.
+    modelApiKeysCopied = await stampModelApiKeysFromLegacy(newDb, personalWorkspaceId)
   } finally {
     // Detach even on failure so the next boot's ATTACH doesn't trip "alias
     // already in use". Swallowing DETACH errors here would mask the original
@@ -151,5 +210,6 @@ export const runLocalDbMigration = async ({
     ranAttach: true,
     durationMs: performance.now() - startedAt,
     rowsInsertedByTable,
+    modelApiKeysCopied,
   }
 }

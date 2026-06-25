@@ -15,7 +15,7 @@ import {
 } from '@/db/tables'
 import { Database } from 'bun:sqlite'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -86,6 +86,12 @@ const legacySchemaSql = [
      deleted_at TEXT,
      user_id TEXT
    )`,
+  // Legacy local-only table from THU-505. THU-579 reverts it; the migration
+  // copies api_key values into the new models.api_key column on the way in.
+  `CREATE TABLE models_secrets (
+     id TEXT PRIMARY KEY,
+     api_key TEXT
+   )`,
 ]
 
 const seedLegacyDb = (path: string): void => {
@@ -100,6 +106,7 @@ const seedLegacyDb = (path: string): void => {
   )
   legacy.run(`INSERT INTO tasks (id, item, "order") VALUES ('task1', 'Buy milk', 1)`)
   legacy.run(`INSERT INTO models (id, provider, name, model, enabled) VALUES ('mdl1', 'openai', 'GPT-4', 'gpt-4', 1)`)
+  legacy.run(`INSERT INTO models_secrets (id, api_key) VALUES ('mdl1', 'sk-legacy')`)
   legacy.run(
     `INSERT INTO agents (id, name, type, transport, url, enabled) VALUES ('ag1', 'Test agent', 'remote-acp', 'websocket', 'wss://x.example/acp', 1)`,
   )
@@ -178,6 +185,7 @@ describe('runLocalDbMigration', () => {
     expect(result.rowsInsertedByTable['agents']).toBe(1)
     expect(result.rowsInsertedByTable['settings']).toBe(1)
     expect(result.rowsInsertedByTable['mcp_servers']).toBe(1)
+    expect(result.modelApiKeysCopied).toBe(1)
 
     const db = getDb()
     const threads = await db.select().from(chatThreadsTable).where(eq(chatThreadsTable.id, 't1'))
@@ -195,6 +203,10 @@ describe('runLocalDbMigration', () => {
     const mcp = await db.select().from(mcpServersTable).where(eq(mcpServersTable.id, 'mcp1'))
     expect(mcp[0]?.workspaceId).toBe(personalWorkspaceId)
     expect(mcp[0]?.name).toBe('GitHub MCP')
+
+    // THU-579: api_key now lives on models, copied from legacy.models_secrets.
+    const model = await db.select().from(modelsTable).where(eq(modelsTable.id, 'mdl1'))
+    expect(model[0]?.apiKey).toBe('sk-legacy')
 
     // Settings is not workspace-scoped — workspaceId column doesn't exist on it.
     const settingsRow = await db.select().from(settingsTable).where(eq(settingsTable.key, 'theme'))
@@ -250,8 +262,8 @@ describe('runLocalDbMigration', () => {
 
   it('skips tables that do not exist in the legacy DB without erroring', async () => {
     // Legacy DB that only has chat_threads — every other table in
-    // `allLegacyTables` is absent. Migration must succeed and report 0 for
-    // the missing tables.
+    // `allLegacyTables` is absent (including the THU-505 models_secrets table).
+    // Migration must succeed, report 0 for the missing tables, and stamp 0 api keys.
     const legacy = new Database(legacyPath)
     legacy.run(`CREATE TABLE chat_threads (id TEXT PRIMARY KEY, title TEXT, user_id TEXT)`)
     legacy.run(`INSERT INTO chat_threads (id, title, user_id) VALUES ('only', 'Solo', 'u1')`)
@@ -268,6 +280,103 @@ describe('runLocalDbMigration', () => {
     expect(result.rowsInsertedByTable['chat_threads']).toBe(1)
     expect(result.rowsInsertedByTable['tasks']).toBe(0)
     expect(result.rowsInsertedByTable['agents']).toBe(0)
+    expect(result.modelApiKeysCopied).toBe(0)
+  })
+
+  it('does not overwrite a pre-existing models.api_key from a sync download (cross-workspace)', async () => {
+    // Sync brought the same model down from BE before the migration ran — it
+    // already has an api_key. INSERT OR IGNORE on `models` skips the legacy
+    // row, so workspace_id stays whatever sync set. The api-key UPDATE filters
+    // on `workspace_id = personalWorkspaceId`, so a row living in a DIFFERENT
+    // workspace must not be touched.
+    seedLegacyDb(legacyPath)
+    const db = getDb()
+    await db.insert(modelsTable).values({
+      id: 'mdl1',
+      provider: 'openai',
+      name: 'GPT-4',
+      model: 'gpt-4',
+      enabled: 1,
+      workspaceId: 'ws-from-sync',
+      apiKey: 'sk-from-sync',
+    })
+
+    await runLocalDbMigration({
+      newDb: db,
+      serverId,
+      personalWorkspaceId,
+      legacyDbAttachPath: legacyPath,
+    })
+
+    const fromSync = await db
+      .select()
+      .from(modelsTable)
+      .where(and(eq(modelsTable.id, 'mdl1'), eq(modelsTable.workspaceId, 'ws-from-sync')))
+    expect(fromSync[0]?.apiKey).toBe('sk-from-sync')
+  })
+
+  it('does not overwrite a same-workspace api_key already set on the new build', async () => {
+    // Re-run / partial-migration scenario: the personal-workspace row already
+    // has an api_key (user pasted it in on the new build before migration ran;
+    // or a previous migration pass left a sync-pulled value). Legacy holds a
+    // different value — migration must NOT clobber.
+    const db = getDb()
+    await db.insert(modelsTable).values({
+      id: 'mdl1',
+      provider: 'openai',
+      name: 'GPT-4',
+      model: 'gpt-4',
+      enabled: 1,
+      workspaceId: personalWorkspaceId,
+      apiKey: 'sk-already-set',
+    })
+    // Seed legacy with a DIFFERENT api key for the same model id.
+    const legacy = new Database(legacyPath)
+    for (const stmt of legacySchemaSql) {
+      legacy.run(stmt)
+    }
+    legacy.run(`INSERT INTO models (id, provider, name, model, enabled) VALUES ('mdl1', 'openai', 'GPT-4', 'gpt-4', 1)`)
+    legacy.run(`INSERT INTO models_secrets (id, api_key) VALUES ('mdl1', 'sk-legacy-should-be-ignored')`)
+    legacy.close()
+
+    const result = await runLocalDbMigration({
+      newDb: db,
+      serverId,
+      personalWorkspaceId,
+      legacyDbAttachPath: legacyPath,
+    })
+
+    expect(result.modelApiKeysCopied).toBe(0)
+    const model = await db
+      .select()
+      .from(modelsTable)
+      .where(and(eq(modelsTable.id, 'mdl1'), eq(modelsTable.workspaceId, personalWorkspaceId)))
+    expect(model[0]?.apiKey).toBe('sk-already-set')
+  })
+
+  it('does not write NULL into models.api_key when the legacy secret value is NULL', async () => {
+    // Pathological legacy row: a models_secrets entry exists but its api_key
+    // is NULL (user opened the settings page and never typed anything, say).
+    // Migration must leave the new row's api_key untouched — currently NULL,
+    // it stays NULL; we don't UPDATE...SET api_key = NULL pointlessly.
+    const legacy = new Database(legacyPath)
+    for (const stmt of legacySchemaSql) {
+      legacy.run(stmt)
+    }
+    legacy.run(`INSERT INTO models (id, provider, name, model, enabled) VALUES ('mdl1', 'openai', 'GPT-4', 'gpt-4', 1)`)
+    legacy.run(`INSERT INTO models_secrets (id, api_key) VALUES ('mdl1', NULL)`)
+    legacy.close()
+
+    const result = await runLocalDbMigration({
+      newDb: getDb(),
+      serverId,
+      personalWorkspaceId,
+      legacyDbAttachPath: legacyPath,
+    })
+
+    expect(result.modelApiKeysCopied).toBe(0)
+    const model = await getDb().select().from(modelsTable).where(eq(modelsTable.id, 'mdl1'))
+    expect(model[0]?.apiKey).toBeNull()
   })
 
   it('namespaces the completion flag per serverId — second server still runs migration', async () => {
