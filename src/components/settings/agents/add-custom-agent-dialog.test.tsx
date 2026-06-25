@@ -340,6 +340,38 @@ describe('AddCustomAgentDialog — local bridge hint', () => {
     expect(screen.queryByTestId('agent-url-loopback-hint')).not.toBeInTheDocument()
     expect(screen.getByText(/Running an agent locally/i)).toBeInTheDocument()
   })
+
+  it('does NOT show the "connects directly" hint for a ws:// loopback on iOS (ATS rejects it)', () => {
+    render(
+      <AddCustomAgentDialog
+        open={true}
+        onOpenChange={() => {}}
+        onSubmit={async () => {}}
+        isIos={() => true}
+        testAcpConnection={async () => ({ success: true })}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'ws://127.0.0.1:8080' } })
+
+    // The URL is rejected on iOS, so the reassuring loopback hint must not show —
+    // the inline secure-URL error is surfaced instead.
+    expect(screen.queryByTestId('agent-url-loopback-hint')).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent(/secure/i)
+  })
+
+  it('still shows the "connects directly" hint for a wss:// loopback on iOS', () => {
+    render(
+      <AddCustomAgentDialog
+        open={true}
+        onOpenChange={() => {}}
+        onSubmit={async () => {}}
+        isIos={() => true}
+        testAcpConnection={async () => ({ success: true })}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText(/url/i), { target: { value: 'wss://127.0.0.1:8080' } })
+    expect(screen.getByTestId('agent-url-loopback-hint')).toHaveTextContent(/connects directly/i)
+  })
 })
 
 describe('AddCustomAgentDialog — edit mode', () => {

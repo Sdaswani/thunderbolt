@@ -174,12 +174,14 @@ export const AddCustomAgentDialog = ({
   const trimmedUrl = state.url.trim()
   const trimmedDescription = state.description.trim()
   const validation = validateAgentUrl(trimmedUrl, isIos)
-  // A loopback URL is a local bridge endpoint — reassure the user it
-  // connects directly (no cloud proxy). Derived during render from the field.
-  const isLoopbackTarget = trimmedUrl.length > 0 && isLoopbackUrl(trimmedUrl)
   // Surface an invalid-URL error at render time (once the field is non-empty)
   // so the user sees why Test Connection is unavailable and submit stays gated.
   const urlError = trimmedUrl.length > 0 && 'error' in validation ? validation.error : null
+  // A loopback URL is a local bridge endpoint — reassure the user it connects
+  // directly (no cloud proxy). Only when the URL is also valid for this platform:
+  // on iOS, a cleartext `ws://127.0.0.1` loopback is rejected by ATS, so showing
+  // "connects directly" while Test/Save stay blocked would be misleading.
+  const isLoopbackTarget = trimmedUrl.length > 0 && !urlError && isLoopbackUrl(trimmedUrl)
   // Submit is gated behind a successful Test Connection — a valid name, URL,
   // and a confirmed connection are all required before saving.
   const canSubmit =
