@@ -22,10 +22,23 @@ const { startTunnel, generateBearer } = require('../src/tunnel')
 // esbuild inlines this; a fallback keeps the un-bundled bin runnable from source.
 const BRIDGE_VERSION = typeof __BRIDGE_VERSION__ !== 'undefined' ? __BRIDGE_VERSION__ : '0.0.0-dev'
 
-const HELP_TEXT = `thunderbolt-stdio-bridge — bridge a local stdio ACP/MCP server to a loopback face.
+const ROOT_HELP_TEXT = `zeus — Thunderbolt's local stdio bridge toolkit.
 
 Usage:
-  thunderbolt-stdio-bridge --mode <acp|mcp> [options] -- <launch>...
+  zeus <command> [options]
+
+Commands:
+  bridge   bridge a local stdio ACP/MCP server to a loopback face
+
+Run \`zeus bridge --help\` for the bridge options.
+
+  -h, --help      print this help and exit
+  -V, --version   print the version and exit`
+
+const BRIDGE_HELP_TEXT = `zeus bridge — bridge a local stdio ACP/MCP server to a loopback face.
+
+Usage:
+  zeus bridge --mode <acp|mcp> [options] -- <launch>...
 
 Everything after \`--\` is the child launch argv, passed verbatim to spawn.
 
@@ -82,7 +95,7 @@ const run = async ({
     return exit(toExitCode(parsed.error))
   }
   if (parsed.help) {
-    stdout.write(`${HELP_TEXT}\n`)
+    stdout.write(`${parsed.help === 'root' ? ROOT_HELP_TEXT : BRIDGE_HELP_TEXT}\n`)
     return exit(EX.OK)
   }
   if (parsed.version) {

@@ -58,10 +58,28 @@ const makeHarness = (over = {}) => {
   }
 }
 
-test('--help prints usage to stdout and exits 0 (no child spawned)', async () => {
+test('root --help prints root usage (lists the bridge command) to stdout and exits 0 (no child spawned)', async () => {
   const h = makeHarness()
   await run({ argv: ['--help'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   expect(h.stdout.text()).toContain('Usage:')
+  expect(h.stdout.text()).toContain('zeus <command>')
+  expect(h.stdout.text()).toContain('bridge')
+  expect(h.exit).toHaveBeenCalledWith(0)
+  expect(h.startBridge).not.toHaveBeenCalled()
+})
+
+test('no args prints root usage and exits 0', async () => {
+  const h = makeHarness()
+  await run({ argv: [], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  expect(h.stdout.text()).toContain('zeus <command>')
+  expect(h.exit).toHaveBeenCalledWith(0)
+  expect(h.startBridge).not.toHaveBeenCalled()
+})
+
+test('bridge --help prints the bridge usage to stdout and exits 0 (no child spawned)', async () => {
+  const h = makeHarness()
+  await run({ argv: ['bridge', '--help'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  expect(h.stdout.text()).toContain('zeus bridge --mode <acp|mcp>')
   expect(h.exit).toHaveBeenCalledWith(0)
   expect(h.startBridge).not.toHaveBeenCalled()
 })
@@ -73,18 +91,26 @@ test('--version prints the version and exits 0', async () => {
   expect(h.exit).toHaveBeenCalledWith(0)
 })
 
-test('missing --mode -> stderr usage message, exit 64, no spawn', async () => {
+test('an unknown command -> stderr usage message, exit 64, no spawn', async () => {
   const h = makeHarness()
-  await run({ argv: ['--', 'node', 'a.js'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bogus'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  expect(h.exit).toHaveBeenCalledWith(64)
+  expect(h.stderr.text()).toContain('unknown command')
+  expect(h.startBridge).not.toHaveBeenCalled()
+})
+
+test('bridge with missing --mode -> stderr usage message, exit 64, no spawn', async () => {
+  const h = makeHarness()
+  await run({ argv: ['bridge', '--', 'node', 'a.js'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   expect(h.exit).toHaveBeenCalledWith(64)
   expect(h.stderr.text().length).toBeGreaterThan(0)
   expect(h.startBridge).not.toHaveBeenCalled()
 })
 
-test('--mode acp -- <cmd> dispatches to startBridge with parsed launch + options', async () => {
+test('bridge --mode acp -- <cmd> dispatches to startBridge with parsed launch + options', async () => {
   const h = makeHarness()
   await run({
-    argv: ['--mode', 'acp', '--allow-origin', 'http://a', '--', 'node', 'agent.js'],
+    argv: ['bridge', '--mode', 'acp', '--allow-origin', 'http://a', '--', 'node', 'agent.js'],
     stdout: h.stdout,
     stderr: h.stderr,
     exit: h.exit,
@@ -111,7 +137,7 @@ test('--mode mcp --tunnel: face binds BEFORE the tunnel, which targets the face 
   h.deps.startMcpFace = startMcpFace
   h.deps.startTunnel = startTunnel
   await run({
-    argv: ['--mode', 'mcp', '--tunnel', '--', 'srv'],
+    argv: ['bridge', '--mode', 'mcp', '--tunnel', '--', 'srv'],
     stdout: h.stdout,
     stderr: h.stderr,
     exit: h.exit,
@@ -131,14 +157,14 @@ test('--mode mcp --tunnel: face binds BEFORE the tunnel, which targets the face 
 
 test('--mode mcp without --tunnel does not start a tunnel and bearer is undefined', async () => {
   const h = makeHarness()
-  await run({ argv: ['--mode', 'mcp', '--', 'srv'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'mcp', '--', 'srv'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   expect(h.startTunnel).not.toHaveBeenCalled()
   expect(h.startMcpFace.mock.calls[0][0].bearer).toBeUndefined()
 })
 
 test('SIGINT handler SIGKILLs (via face close) the live child then exits 130', async () => {
   const h = makeHarness()
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   await h.signals.SIGINT()
   expect(h.face.close).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(130)
@@ -146,7 +172,7 @@ test('SIGINT handler SIGKILLs (via face close) the live child then exits 130', a
 
 test('SIGTERM handler closes the face then exits 0', async () => {
   const h = makeHarness()
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   await h.signals.SIGTERM()
   expect(h.face.close).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(0)
@@ -158,7 +184,7 @@ test('a bind failure from the face (UnavailableError EADDRINUSE) maps to exit 69
     throw err
   })
   const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   expect(h.exit).toHaveBeenLastCalledWith(69)
 })
 
@@ -167,14 +193,14 @@ test('an unexpected internal throw maps to exit 70', async () => {
     throw new Error('boom')
   })
   const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   expect(h.exit).toHaveBeenLastCalledWith(70)
 })
 
 test('logger is constructed with json/verbose flags and the injected stderr sink', async () => {
   const h = makeHarness()
   await run({
-    argv: ['--mode', 'acp', '--json', '--verbose', '--', 'x'],
+    argv: ['bridge', '--mode', 'acp', '--json', '--verbose', '--', 'x'],
     stdout: h.stdout,
     stderr: h.stderr,
     exit: h.exit,
@@ -196,7 +222,7 @@ test('insecureFlagWarnings are emitted to stderr (via logger.warn) before the fa
   })
   h.deps.startBridge = startBridge
   await run({
-    argv: ['--mode', 'acp', '--allow-any-origin', '--host', '0.0.0.0', '--', 'x'],
+    argv: ['bridge', '--mode', 'acp', '--allow-any-origin', '--host', '0.0.0.0', '--', 'x'],
     stdout: h.stdout,
     stderr: h.stderr,
     exit: h.exit,
@@ -212,7 +238,7 @@ test('on clean child exit the bridge exits with the child-derived code (0)', asy
     return h.face
   })
   const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   await captured.onChildExit({ code: 0, signal: null })
   expect(h.exit).toHaveBeenLastCalledWith(0)
 })
@@ -224,14 +250,14 @@ test('a nonzero child exit derives exit 70', async () => {
     return h.face
   })
   const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   await captured.onChildExit({ code: 1, signal: null })
   expect(h.exit).toHaveBeenLastCalledWith(70)
 })
 
 test('uncaughtException SIGKILLs the live child (face.kill) and exits 70 (never-orphan)', async () => {
   const h = makeHarness()
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   h.signals.uncaughtException(Object.assign(new Error('boom'), { code: 'ERR_FOO' }))
   expect(h.face.kill).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(70)
@@ -239,15 +265,15 @@ test('uncaughtException SIGKILLs the live child (face.kill) and exits 70 (never-
 
 test('unhandledRejection SIGKILLs the live child (face.kill) and exits 70 (never-orphan)', async () => {
   const h = makeHarness()
-  await run({ argv: ['--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   h.signals.unhandledRejection(new Error('rejected'))
   expect(h.face.kill).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(70)
 })
 
-test('--tunnel without --mode mcp is a usage error (exit 64)', async () => {
+test('bridge --tunnel without --mode mcp is a usage error (exit 64)', async () => {
   const h = makeHarness()
-  await run({ argv: ['--tunnel', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({ argv: ['bridge', '--tunnel', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
   expect(h.exit).toHaveBeenCalledWith(64)
   expect(h.startBridge).not.toHaveBeenCalled()
 })

@@ -2,9 +2,10 @@
    - License, v. 2.0. If a copy of the MPL was not distributed with this
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
-# thunderbolt-stdio-bridge
+# zeus
 
-Bridges a local **stdio** ACP or MCP server to a **loopback** network face so a
+`zeus` is Thunderbolt's local stdio bridge toolkit. Its `bridge` subcommand
+bridges a local **stdio** ACP or MCP server to a **loopback** network face so a
 browser app can talk to it:
 
 - `--mode acp` — exposes the child over a **WebSocket** (`ws://127.0.0.1:PORT`).
@@ -20,7 +21,8 @@ that treats the bridge as a stdio child can never have its framing corrupted.
 ## Usage
 
 ```
-thunderbolt-stdio-bridge --mode <acp|mcp> [options] -- <launch> [args...]
+zeus <command> [options]
+zeus bridge --mode <acp|mcp> [options] -- <launch> [args...]
 ```
 
 Everything after the first bare `--` is the child launch argv, passed verbatim
@@ -28,18 +30,18 @@ to `spawn`.
 
 ```sh
 # ACP: bridge a local stdio ACP agent to a loopback WebSocket
-thunderbolt-stdio-bridge --mode acp -- node my-acp-agent.js
+zeus bridge --mode acp -- node my-acp-agent.js
 # stderr: ws://127.0.0.1:54123
 
 # MCP: bridge a local stdio MCP server to a loopback HTTP face
-thunderbolt-stdio-bridge --mode mcp -- npx @modelcontextprotocol/server-everything
+zeus bridge --mode mcp -- npx @modelcontextprotocol/server-everything
 # stderr: http://127.0.0.1:54124/mcp
 
 # MCP behind a public cloudflared quick tunnel (mints a mandatory bearer)
-thunderbolt-stdio-bridge --mode mcp --tunnel -- npx some-mcp-server
+zeus bridge --mode mcp --tunnel -- npx some-mcp-server
 ```
 
-### Options
+### `zeus bridge` options
 
 | Flag                 | Default     | Meaning                                                           |
 | -------------------- | ----------- | ----------------------------------------------------------------- |
@@ -82,22 +84,22 @@ orphans the process it spawned, and it never restarts it.
 
 ## Installation
 
-The bridge ships as a single self-contained `bridge.cjs` attached to a GitHub
+`zeus` ships as a single self-contained `zeus.cjs` attached to a GitHub
 release — there is **no npm publish**. `install.sh` downloads that artifact and
-links it onto your `PATH` as `thunderbolt-stdio-bridge`:
+links it onto your `PATH` as `zeus`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/thunderbolt-stdio-bridge/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash
 ```
 
-The app invokes the published binary via `npx thunderbolt-stdio-bridge`.
+The app invokes the published binary as `zeus bridge ...`.
 
 ## Building
 
 `bun run build` runs `scripts/build-cli.mjs`, which bundles the CLI with esbuild
-into `dist/bridge.cjs` (Node 18 target, `bufferutil`/`utf-8-validate` left
+into `dist/zeus.cjs` (Node 18 target, `bufferutil`/`utf-8-validate` left
 external, the version inlined from `package.json`, shebang prepended) and emits a
-companion Windows `.cmd` launcher.
+companion Windows `dist/zeus.cmd` launcher.
 
 ## Development
 

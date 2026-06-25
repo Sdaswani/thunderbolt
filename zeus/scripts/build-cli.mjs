@@ -3,7 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 // Bundles bin/cli.js (and its src/ deps) into a single self-contained
-// dist/bridge.cjs that install.sh ships verbatim from GitHub Releases. esbuild
+// dist/zeus.cjs that install.sh ships verbatim from GitHub Releases. esbuild
 // inlines the package version as the __BRIDGE_VERSION__ global referenced by
 // the CLI (so --version works in the bundle), prepends a node shebang so the
 // bare file is directly executable, and keeps the native ws acceleration addons
@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const outfile = join(root, 'dist', 'bridge.cjs')
+const outfile = join(root, 'dist', 'zeus.cjs')
 
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 
@@ -37,9 +37,9 @@ await build({
 
 await chmod(outfile, 0o755)
 
-// Windows ignores the shebang and won't run a bare bridge.cjs from PATH, so emit
-// a sibling .cmd shim that forwards every arg to node bridge.cjs.
-const cmd = '@echo off\r\nnode "%~dp0bridge.cjs" %*\r\n'
-await writeFile(join(root, 'dist', 'thunderbolt-stdio-bridge.cmd'), cmd)
+// Windows ignores the shebang and won't run a bare zeus.cjs from PATH, so emit
+// a sibling .cmd shim that forwards every arg to node zeus.cjs.
+const cmd = '@echo off\r\nnode "%~dp0zeus.cjs" %*\r\n'
+await writeFile(join(root, 'dist', 'zeus.cmd'), cmd)
 
 console.error(`built ${outfile} (v${pkg.version})`)

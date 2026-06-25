@@ -19,15 +19,16 @@ const VALID_MODES = new Set(['acp', 'mcp'])
 const looksLikeFlag = (token) => token !== undefined && token.startsWith('-')
 
 /**
- * Pure argv parser. Splits flags from the child launch argv at the first bare
- * `--`, validates flag values and cross-flag rules, and returns a fully
- * resolved options object — or a `{help}`/`{version}` intent. Throws UsageError
- * on any invalid input so the CLI maps it to exit 64.
+ * Pure flag parser for the `bridge` subcommand. Splits flags from the child
+ * launch argv at the first bare `--`, validates flag values and cross-flag
+ * rules, and returns a fully resolved options object — or a
+ * `{help:'bridge'}`/`{version}` intent. Throws UsageError on any invalid input
+ * so the CLI maps it to exit 64.
  * @param {string[]} argv
- * @returns {ParsedArgs | { help: true } | { version: true }}
+ * @returns {ParsedArgs | { help: 'bridge' } | { version: true }}
  */
-const parseArgs = (argv) => {
-  if (argv.includes('--help') || argv.includes('-h')) return { help: true }
+const parseBridgeArgs = (argv) => {
+  if (argv.includes('--help') || argv.includes('-h')) return { help: 'bridge' }
   if (argv.includes('--version') || argv.includes('-V')) return { version: true }
 
   const delimiterIndex = argv.indexOf('--')
@@ -91,4 +92,24 @@ const parseArgs = (argv) => {
   return /** @type {ParsedArgs} */ ({ ...opts, launch })
 }
 
-module.exports = { parseArgs }
+/**
+ * Top-level subcommand dispatcher. Routes the first token to a subcommand
+ * (currently only `bridge`), or short-circuits to a root help/version intent.
+ * Resolved bridge opts carry `command: 'bridge'`. Throws UsageError (→ exit 64)
+ * on an unknown command.
+ * @param {string[]} argv
+ * @returns {(ParsedArgs & { command: 'bridge' }) | { help: 'root' } | { help: 'bridge' } | { version: true }}
+ */
+const parseArgs = (argv) => {
+  const [token, ...rest] = argv
+  if (token === undefined || token === '--help' || token === '-h') return { help: 'root' }
+  if (token === '--version' || token === '-V') return { version: true }
+  if (token === 'bridge') {
+    const parsed = parseBridgeArgs(rest)
+    if ('help' in parsed || 'version' in parsed) return parsed
+    return { ...parsed, command: 'bridge' }
+  }
+  throw new UsageError(`unknown command: ${token}`)
+}
+
+module.exports = { parseArgs, parseBridgeArgs }

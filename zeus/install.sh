@@ -3,22 +3,22 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-# thunderbolt-stdio-bridge installer.
+# zeus installer.
 #
-# Downloads the prebuilt bridge.cjs bundle from GitHub Releases and installs it
+# Downloads the prebuilt zeus.cjs bundle from GitHub Releases and installs it
 # as a bare command on the npm global bin dir (next to npm/npx). Requires node;
-# no Bun, no registry publish, no runtime bundling. bridge.cjs already ships a
+# no Bun, no registry publish, no runtime bundling. zeus.cjs already ships a
 # `#!/usr/bin/env node` shebang, so dropping it in under the command name makes
-# `thunderbolt-stdio-bridge <args>` behave like any global node CLI.
+# `zeus <args>` behave like any global node CLI.
 #
-#   curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/thunderbolt-stdio-bridge/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash
 #
 # Pin a version:  ... | bash -s -- 0.1.0
 # Custom bin dir: THUNDERBOLT_BIN_DIR=/opt/bin ... | bash
 set -euo pipefail
 
 REPO="thunderbird/thunderbolt"
-CMD="thunderbolt-stdio-bridge"
+CMD="zeus"
 
 command -v node >/dev/null 2>&1 || { echo "error: node is required (https://nodejs.org)" >&2; exit 1; }
 command -v npm >/dev/null 2>&1 || { echo "error: npm is required (ships with node)" >&2; exit 1; }
@@ -41,13 +41,13 @@ fi
 
 # Resolve the version: explicit arg/env wins; otherwise read main's package.json
 # (always current, no GitHub API call so no rate limit).
-VERSION="${1:-${THUNDERBOLT_STDIO_BRIDGE_VERSION:-}}"
+VERSION="${1:-${ZEUS_VERSION:-}}"
 if [ -z "$VERSION" ]; then
-  VERSION=$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/thunderbolt-stdio-bridge/package.json" \
+  VERSION=$(curl -fsSL "https://raw.githubusercontent.com/$REPO/main/zeus/package.json" \
     | sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' | head -n1)
   [ -n "$VERSION" ] || { echo "error: could not resolve latest version" >&2; exit 1; }
 fi
-URL="https://github.com/$REPO/releases/download/stdio-bridge-v$VERSION/bridge.cjs"
+URL="https://github.com/$REPO/releases/download/zeus-v$VERSION/zeus.cjs"
 SUM_URL="$URL.sha256"
 
 echo "Installing $CMD $VERSION -> $BIN_DIR/$CMD"
@@ -60,17 +60,17 @@ curl -fL --progress-bar -o "$TMP" "$URL"
 
 # Verify the download against the Release's published SHA-256 before installing.
 # Pick whichever checksum tool is present; the published file is in `shasum -c`
-# format (`<hex>  bridge.cjs`), so verify from $TMP's own directory under that
+# format (`<hex>  zeus.cjs`), so verify from $TMP's own directory under that
 # basename. Abort on mismatch or a missing tool — never install unverified bytes.
 curl -fsSL -o "$SUM_TMP" "$SUM_URL"
 EXPECTED=$(awk '{print $1; exit}' "$SUM_TMP")
 [ -n "$EXPECTED" ] || { echo "error: could not read published checksum" >&2; exit 1; }
 if command -v shasum >/dev/null 2>&1; then
   echo "$EXPECTED  $TMP" | shasum -a 256 -c - >/dev/null 2>&1 \
-    || { echo "error: checksum verification failed for bridge.cjs" >&2; exit 1; }
+    || { echo "error: checksum verification failed for zeus.cjs" >&2; exit 1; }
 elif command -v sha256sum >/dev/null 2>&1; then
   echo "$EXPECTED  $TMP" | sha256sum -c - >/dev/null 2>&1 \
-    || { echo "error: checksum verification failed for bridge.cjs" >&2; exit 1; }
+    || { echo "error: checksum verification failed for zeus.cjs" >&2; exit 1; }
 else
   echo "error: need shasum or sha256sum to verify the download" >&2; exit 1
 fi
