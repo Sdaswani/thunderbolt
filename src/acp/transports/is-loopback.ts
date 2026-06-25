@@ -15,8 +15,11 @@
 
 /** Hostnames that resolve to the local machine, in canonical (bracket-free,
  *  lowercase) form. `new URL().hostname` brackets IPv6 literals (`[::1]`), so
- *  `isLoopbackHost` strips those brackets before comparing against `::1`. */
-const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost', '0.0.0.0'])
+ *  `isLoopbackHost` strips those brackets before comparing against `::1`.
+ *  `0.0.0.0` is deliberately excluded: it is an all-interfaces *bind* address,
+ *  not a valid *connect* target, and excluding it matches the bridge's own
+ *  classifier (which accepts 127.0.0.0/8, ::1, localhost). */
+const loopbackHosts = new Set(['127.0.0.1', '::1', 'localhost'])
 
 /**
  * True when `host` names the local machine. Accepts a bare hostname (no

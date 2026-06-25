@@ -74,7 +74,7 @@ const BinaryFallback = ({ entry }: { entry: RegistryEntry }) => {
  * agent's own docs instead.
  */
 export const BridgeConnectDialog = ({ entry, open, onOpenChange }: BridgeConnectDialogProps) => {
-  const bridgeCommand = composeBridgeCommand(entry)
+  const bridgeCommand = composeBridgeCommand(entry, window.location.origin)
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

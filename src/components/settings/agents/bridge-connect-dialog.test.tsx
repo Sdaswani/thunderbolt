@@ -46,7 +46,7 @@ describe('BridgeConnectDialog — npx agent', () => {
     // Install command and the bridge run command both appear.
     expect(screen.getByText(/curl -fsSL/)).toBeInTheDocument()
     expect(
-      screen.getByText('npx thunderbolt-stdio-bridge --mode acp -- npx @google/gemini-cli@0.46.0 --acp'),
+      screen.getByText('thunderbolt-stdio-bridge --mode acp -- npx @google/gemini-cli@0.46.0 --acp'),
     ).toBeInTheDocument()
     // Step 3 directs the user to Add custom agent.
     expect(screen.getByText(/add custom agent/i)).toBeInTheDocument()
@@ -60,7 +60,7 @@ describe('BridgeConnectDialog — npx agent', () => {
     })
 
     expect(writeTextMock).toHaveBeenCalledWith(
-      'npx thunderbolt-stdio-bridge --mode acp -- npx @google/gemini-cli@0.46.0 --acp',
+      'thunderbolt-stdio-bridge --mode acp -- npx @google/gemini-cli@0.46.0 --acp',
     )
   })
 

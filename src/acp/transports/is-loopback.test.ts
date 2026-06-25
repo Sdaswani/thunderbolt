@@ -6,11 +6,14 @@ import { describe, expect, it } from 'bun:test'
 import { isLoopbackHost, isLoopbackUrl } from './is-loopback'
 
 describe('isLoopbackHost', () => {
-  it('classifies the four loopback hostnames', () => {
+  it('classifies the loopback hostnames', () => {
     expect(isLoopbackHost('127.0.0.1')).toBe(true)
     expect(isLoopbackHost('::1')).toBe(true)
     expect(isLoopbackHost('localhost')).toBe(true)
-    expect(isLoopbackHost('0.0.0.0')).toBe(true)
+  })
+
+  it('does not treat 0.0.0.0 as loopback (it is a bind address, not a connect target)', () => {
+    expect(isLoopbackHost('0.0.0.0')).toBe(false)
   })
 
   it('is case-insensitive', () => {
@@ -45,8 +48,11 @@ describe('isLoopbackUrl', () => {
 
   it('canonicalizes shorthand: ports, paths, and casing do not matter', () => {
     expect(isLoopbackUrl('http://localhost:3000/mcp')).toBe(true)
-    expect(isLoopbackUrl('ws://0.0.0.0:1234')).toBe(true)
     expect(isLoopbackUrl('http://LOCALHOST/x')).toBe(true)
+  })
+
+  it('does not treat a 0.0.0.0 URL as loopback (bind address, not a connect target)', () => {
+    expect(isLoopbackUrl('ws://0.0.0.0:1234')).toBe(false)
   })
 
   it('classifies IPv6 loopback whether bracketed in the URL or not', () => {

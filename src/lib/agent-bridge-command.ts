@@ -19,6 +19,7 @@
  * the agent's own site/repo instead.
  */
 
+import { isLoopbackUrl } from '@/acp/transports/is-loopback'
 import type { RegistryEntry } from '@/types/registry'
 
 /** The command name the app's `install.sh` installs onto PATH. */
@@ -52,15 +53,43 @@ export const composeLaunchCommand = (entry: RegistryEntry): string | null => {
 export const composeInstallCommand = (): string => installCommand
 
 /**
- * The full bridge command for an agent:
- * `npx thunderbolt-stdio-bridge --mode acp -- <launch>`. Returns `null` when the
- * agent only ships a binary distribution (no composable launch fragment), so the
- * dialog can render its binary fallback instead.
+ * Whether a copied bridge command needs an explicit `--allow-origin`: only for a
+ * valid, non-loopback http(s) app origin (production web). Opaque origins (the
+ * literal `'null'`, `file:`, sandboxed frames) and loopback origins need nothing
+ * — the bridge's default allowlist already accepts loopback and absent Origins.
  */
-export const composeBridgeCommand = (entry: RegistryEntry): string | null => {
+const needsAllowOrigin = (origin: string | undefined): origin is string => {
+  if (!origin) {
+    return false
+  }
+  try {
+    const { protocol } = new URL(origin)
+    return (protocol === 'http:' || protocol === 'https:') && !isLoopbackUrl(origin)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The full bridge command for an agent:
+ * `thunderbolt-stdio-bridge --mode acp -- <launch>`. The bridge is the bare
+ * binary `install.sh` drops on PATH — invoke it directly (no `npx`, which would
+ * hit the registry since the bridge is never published to npm). Returns `null`
+ * when the agent only ships a binary distribution (no composable launch
+ * fragment), so the dialog can render its binary fallback instead.
+ *
+ * When `origin` is a non-loopback app origin (production web), the bridge's
+ * default loopback-only Origin allowlist would reject the browser's WS upgrade,
+ * so we add `--allow-origin '<origin>'`. A loopback origin (or none) needs
+ * nothing extra — the default allowlist already accepts loopback.
+ *
+ * The catalogue is ACP-only, so `--mode acp` is always correct here.
+ */
+export const composeBridgeCommand = (entry: RegistryEntry, origin?: string): string | null => {
   const launch = composeLaunchCommand(entry)
   if (!launch) {
     return null
   }
-  return `npx ${bridgeBin} --mode acp -- ${launch}`
+  const allowOrigin = needsAllowOrigin(origin) ? `--allow-origin '${origin}' ` : ''
+  return `${bridgeBin} --mode acp ${allowOrigin}-- ${launch}`
 }

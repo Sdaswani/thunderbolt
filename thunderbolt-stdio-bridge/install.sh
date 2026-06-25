@@ -24,7 +24,19 @@ command -v node >/dev/null 2>&1 || { echo "error: node is required (https://node
 command -v npm >/dev/null 2>&1 || { echo "error: npm is required (ships with node)" >&2; exit 1; }
 
 # Install next to npm/npx (the npm global bin), or honor an explicit override.
-BIN_DIR="${THUNDERBOLT_BIN_DIR:-$(npm prefix -g 2>/dev/null)/bin}"
+# Without an override, resolve the npm global prefix and refuse to proceed if it
+# is empty — never fall back to a bare `/bin`, which would be wrong and unsafe.
+if [ -n "${THUNDERBOLT_BIN_DIR:-}" ]; then
+  BIN_DIR="$THUNDERBOLT_BIN_DIR"
+else
+  prefix="$(npm prefix -g 2>/dev/null)"
+  [ -n "$prefix" ] && [ -d "$prefix" ] || {
+    echo "error: could not resolve the npm global prefix (npm prefix -g)." >&2
+    echo "       set THUNDERBOLT_BIN_DIR=/path/to/bin and re-run." >&2
+    exit 1
+  }
+  BIN_DIR="$prefix/bin"
+fi
 [ -d "$BIN_DIR" ] || mkdir -p "$BIN_DIR"
 
 # Resolve the version: explicit arg/env wins; otherwise read main's package.json
@@ -36,13 +48,33 @@ if [ -z "$VERSION" ]; then
   [ -n "$VERSION" ] || { echo "error: could not resolve latest version" >&2; exit 1; }
 fi
 URL="https://github.com/$REPO/releases/download/stdio-bridge-v$VERSION/bridge.cjs"
+SUM_URL="$URL.sha256"
 
 echo "Installing $CMD $VERSION -> $BIN_DIR/$CMD"
 
 # Download to a tmp file and move atomically — no half-written command on Ctrl-C.
 TMP=$(mktemp)
-trap 'rm -f "$TMP"' EXIT
+SUM_TMP=$(mktemp)
+trap 'rm -f "$TMP" "$SUM_TMP"' EXIT
 curl -fL --progress-bar -o "$TMP" "$URL"
+
+# Verify the download against the Release's published SHA-256 before installing.
+# Pick whichever checksum tool is present; the published file is in `shasum -c`
+# format (`<hex>  bridge.cjs`), so verify from $TMP's own directory under that
+# basename. Abort on mismatch or a missing tool — never install unverified bytes.
+curl -fsSL -o "$SUM_TMP" "$SUM_URL"
+EXPECTED=$(awk '{print $1; exit}' "$SUM_TMP")
+[ -n "$EXPECTED" ] || { echo "error: could not read published checksum" >&2; exit 1; }
+if command -v shasum >/dev/null 2>&1; then
+  echo "$EXPECTED  $TMP" | shasum -a 256 -c - >/dev/null 2>&1 \
+    || { echo "error: checksum verification failed for bridge.cjs" >&2; exit 1; }
+elif command -v sha256sum >/dev/null 2>&1; then
+  echo "$EXPECTED  $TMP" | sha256sum -c - >/dev/null 2>&1 \
+    || { echo "error: checksum verification failed for bridge.cjs" >&2; exit 1; }
+else
+  echo "error: need shasum or sha256sum to verify the download" >&2; exit 1
+fi
+
 chmod +x "$TMP"
 
 # The npm global bin may need root (system node / Homebrew) — single-file move.

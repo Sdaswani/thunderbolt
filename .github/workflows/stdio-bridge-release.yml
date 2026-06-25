@@ -89,8 +89,15 @@ jobs:
           grep -q '"event":"mcp-listening"' mcp.log
           grep -q 'http://127.0.0.1:' mcp.log
 
-      - name: Publish bridge.cjs to the tag's GitHub Release
+      - name: Publish bridge.cjs (+ sha256) to the tag's GitHub Release
         if: startsWith(github.ref, 'refs/tags/stdio-bridge-v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${GITHUB_REF_NAME}" dist/bridge.cjs --title "${GITHUB_REF_NAME}" --generate-notes
+        # Emit the checksum with a bare `bridge.cjs` basename (cd into dist) so the
+        # published .sha256 is in plain `shasum -a 256 -c` format; install.sh
+        # verifies the downloaded bundle against it before installing.
+        run: |
+          ( cd dist && shasum -a 256 bridge.cjs > bridge.cjs.sha256 )
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/bridge.cjs dist/bridge.cjs.sha256 \
+            --title "${GITHUB_REF_NAME}" --generate-notes

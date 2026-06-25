@@ -51,21 +51,42 @@ describe('composeLaunchCommand', () => {
 })
 
 describe('composeBridgeCommand', () => {
-  it('wraps an npx launch in the bridge command (--mode acp)', () => {
+  it('wraps an npx launch in the bridge command (--mode acp), invoking the bare on-PATH binary', () => {
     const entry = entryWith({ npx: { package: '@google/gemini-cli@0.46.0', args: ['--acp'] } })
-    expect(composeBridgeCommand(entry)).toBe(
-      'npx thunderbolt-stdio-bridge --mode acp -- npx @google/gemini-cli@0.46.0 --acp',
-    )
+    const command = composeBridgeCommand(entry)
+    expect(command).toBe('thunderbolt-stdio-bridge --mode acp -- npx @google/gemini-cli@0.46.0 --acp')
+    expect(command?.startsWith('thunderbolt-stdio-bridge ')).toBe(true)
+    expect(command?.startsWith('npx')).toBe(false)
   })
 
   it('wraps a uvx launch in the bridge command', () => {
     const entry = entryWith({ uvx: { package: 'fast-agent', args: ['acp'] } })
-    expect(composeBridgeCommand(entry)).toBe('npx thunderbolt-stdio-bridge --mode acp -- uvx fast-agent acp')
+    expect(composeBridgeCommand(entry)).toBe('thunderbolt-stdio-bridge --mode acp -- uvx fast-agent acp')
+  })
+
+  it('adds --allow-origin for a non-loopback app origin (production web)', () => {
+    const entry = entryWith({ npx: { package: '@google/gemini-cli@0.46.0', args: ['--acp'] } })
+    expect(composeBridgeCommand(entry, 'https://app.thunderbird.net')).toBe(
+      "thunderbolt-stdio-bridge --mode acp --allow-origin 'https://app.thunderbird.net' -- npx @google/gemini-cli@0.46.0 --acp",
+    )
+  })
+
+  it('omits --allow-origin for a loopback app origin (default allowlist already accepts it)', () => {
+    const entry = entryWith({ npx: { package: '@google/gemini-cli@0.46.0', args: ['--acp'] } })
+    const command = composeBridgeCommand(entry, 'http://localhost:1421')
+    expect(command).toBe('thunderbolt-stdio-bridge --mode acp -- npx @google/gemini-cli@0.46.0 --acp')
+    expect(command).not.toContain('--allow-origin')
+  })
+
+  it('omits --allow-origin when no origin is provided', () => {
+    const entry = entryWith({ npx: { package: '@google/gemini-cli@0.46.0', args: ['--acp'] } })
+    expect(composeBridgeCommand(entry)).not.toContain('--allow-origin')
   })
 
   it('returns null for a binary-only distribution (UI points at the agent site/repo)', () => {
     const entry = entryWith({ binary: { 'linux-x86_64': { cmd: './goose' } } })
     expect(composeBridgeCommand(entry)).toBeNull()
+    expect(composeBridgeCommand(entry, 'https://app.thunderbird.net')).toBeNull()
   })
 })
 
