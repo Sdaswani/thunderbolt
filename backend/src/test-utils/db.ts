@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { PGlite } from '@electric-sql/pglite'
+import { uuid_ossp } from '@electric-sql/pglite/contrib/uuid_ossp'
 import { drizzle } from 'drizzle-orm/pglite'
 import { migrate } from 'drizzle-orm/pglite/migrator'
 import { resolve } from 'path'
@@ -23,7 +24,7 @@ class TestDbManager {
       return
     }
 
-    this.client = new PGlite()
+    this.client = new PGlite({ extensions: { uuid_ossp } })
     this.db = drizzle({ client: this.client, schema })
     const migrationsFolder = resolve(import.meta.dir, '../../drizzle')
     await migrate(this.db, { migrationsFolder })
@@ -131,7 +132,7 @@ export type IsolatedTestDb = {
  * `--rerun-each` (see test-setup.ts).
  */
 export const createIsolatedTestDb = async (): Promise<IsolatedTestDb> => {
-  const client = new PGlite()
+  const client = new PGlite({ extensions: { uuid_ossp } })
   const db = drizzle({ client, schema })
   const migrationsFolder = resolve(import.meta.dir, '../../drizzle')
   await migrate(db, { migrationsFolder })

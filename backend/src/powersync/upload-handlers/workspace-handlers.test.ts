@@ -667,6 +667,61 @@ describe('workspace upload handlers', () => {
       expectPermanentReject(result, 'PERSONAL_WORKSPACE_IMMUTABLE')
     })
 
+    // Rollout case (THU-622): Drizzle 0020 backfilled the personal workspace +
+    // admin membership for every pre-existing user. On first sign-in to the
+    // workspaces build, `ensurePersonalWorkspace` FE-creates the same row at
+    // the canonical id and PowerSync queues an upload. The handler treats it
+    // as an idempotent re-claim of the canonical admin row rather than
+    // rejecting as PERSONAL_WORKSPACE_IMMUTABLE — otherwise PowerSync's
+    // permanent-reject path reverts the local oplog write and `WorkspaceGate`
+    // briefly closes (loading flicker) before sync downloads the BE row back.
+    it('accepts a re-bootstrap of the canonical admin row (idempotent re-claim)', async () => {
+      await insertUser('rebootstrap1', 'rebootstrap1@test.com')
+      const workspaceId = await bootstrapPersonalViaUpload('rebootstrap1')
+      const adminMembershipId = computePersonalAdminMembershipId('rebootstrap1')
+
+      // Same canonical id, same workspace, same user, same admin role —
+      // re-uploaded by the FE on a fresh-install device.
+      const op: UploadOp = {
+        op: 'PUT',
+        type: 'workspace_memberships',
+        id: adminMembershipId,
+        data: { workspace_id: workspaceId, user_id: 'rebootstrap1', role: 'admin' },
+      }
+      const result = await applyUploadBatch(db, [op], ctxFor('rebootstrap1'))
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.rejected).toHaveLength(0)
+      }
+
+      // Only one membership remains — upsert applied, no duplicate row.
+      const rows = await db
+        .select()
+        .from(workspaceMembershipsTable)
+        .where(eq(workspaceMembershipsTable.workspaceId, workspaceId))
+      expect(rows).toHaveLength(1)
+      expect(rows[0].id).toBe(adminMembershipId)
+      expect(rows[0].role).toBe('admin')
+    })
+
+    it('rejects a re-bootstrap attempting to demote the canonical admin to member', async () => {
+      await insertUser('rebootstrap2', 'rebootstrap2@test.com')
+      const workspaceId = await bootstrapPersonalViaUpload('rebootstrap2')
+      const adminMembershipId = computePersonalAdminMembershipId('rebootstrap2')
+
+      // Canonical id + canonical workspace + canonical user, but role flipped
+      // to 'member'. Bootstrap requires role === 'admin', so this falls through
+      // to the immutable rejection rather than silently demoting.
+      const op: UploadOp = {
+        op: 'PUT',
+        type: 'workspace_memberships',
+        id: adminMembershipId,
+        data: { workspace_id: workspaceId, user_id: 'rebootstrap2', role: 'member' },
+      }
+      const result = await applyUploadBatch(db, [op], ctxFor('rebootstrap2'))
+      expectPermanentReject(result, 'PERSONAL_WORKSPACE_IMMUTABLE')
+    })
+
     it('protects the last admin of a shared workspace from deletion', async () => {
       await insertUser('a4', 'a4@test.com')
       await bootstrapPersonalViaUpload('a4')
@@ -2454,6 +2509,47 @@ describe('workspace upload handlers', () => {
       const bRow = (await db.select().from(modelsTable).where(eq(modelsTable.workspaceId, wsB)))[0]
       expect(aRow.name).toBe('A original')
       expect(bRow.name).toBe('B edited')
+    })
+  })
+
+  // During the Workspaces v1 rollout, stale clients on the previous build still
+  // PUT rows without a `workspace_id`. The handler falls them back into the
+  // caller's personal workspace (computed deterministically — same as where the
+  // FE pre-workspaces-attach migration would land them after upgrade), so
+  // creates aren't silently dropped during the rollout window.
+  describe('stale-client PUT fallback (no workspace_id)', () => {
+    it('routes a missing-workspace_id PUT into the caller personal workspace', async () => {
+      await insertUser('stale1', 'stale1@test.com')
+      const personalId = await bootstrapPersonalViaUpload('stale1')
+
+      const modelId = uuidv7()
+      const result = await applyUploadBatch(
+        db,
+        [
+          {
+            op: 'PUT',
+            type: 'models',
+            id: modelId,
+            data: {
+              provider: 'openai',
+              name: 'Stale-client model',
+              model: 'gpt-test',
+              enabled: 1,
+              scope: 'workspace',
+            },
+          },
+        ],
+        ctxFor('stale1'),
+      )
+      expect(result.ok).toBe(true)
+      if (result.ok) {
+        expect(result.rejected).toHaveLength(0)
+      }
+
+      const rows = await db.select().from(modelsTable).where(eq(modelsTable.id, modelId))
+      expect(rows).toHaveLength(1)
+      expect(rows[0].workspaceId).toBe(personalId)
+      expect(rows[0].userId).toBe('stale1')
     })
   })
 })

@@ -26,17 +26,25 @@ const isRole = (v: unknown): v is Role => v === 'admin' || v === 'member'
  * the very first admin membership for that workspace has to land via upload
  * too. The handler's general rule — "must be admin of the target workspace to
  * write a membership" — would reject this initial claim because no admin exists
- * yet. This narrow exception unlocks exactly one row:
+ * yet. This narrow exception unlocks exactly one shape of row:
  *
  *   - target workspace is personal
  *   - workspace's owner is the caller
  *   - membership id matches the canonical admin-self id for the caller
  *   - membership references the caller as the user
  *   - role is admin
- *   - no memberships exist on the workspace yet
  *
- * Once the row lands the workspace is back in the immutable state — any
- * subsequent membership write for a personal workspace is rejected as before.
+ * Existing-state guard (idempotent re-bootstrap):
+ *   - if no memberships exist yet → first claim, allow
+ *   - if a single canonical admin row already exists at the same id, pointing
+ *     at the same workspace + user + admin role → re-claim is a no-op upsert,
+ *     allow. This covers the rollout case where Drizzle 0020 backfilled the
+ *     membership server-side and a FE on the new build re-uploads its locally
+ *     created row on first sign-in. Rejecting would force PowerSync to revert
+ *     the local oplog entry, which causes `WorkspaceGate` to flicker closed.
+ *
+ * Anything else (different user, different role, extra rows) still falls
+ * through to the immutable rejection.
  */
 const isPersonalAdminBootstrap = async (
   tx: UploadTx,
@@ -63,7 +71,21 @@ const isPersonalAdminBootstrap = async (
     return false
   }
   const existingMemberships = await countWorkspaceMemberships(tx, targetWorkspaceId)
-  return existingMemberships === 0
+  if (existingMemberships === 0) {
+    return true
+  }
+  // Idempotent re-bootstrap path: the only acceptable existing state is the
+  // exact canonical admin row we're being asked to upsert. Anything else (a
+  // co-member, a non-admin claim at the canonical id) must still reject so a
+  // hostile client can't slip past the immutability invariant.
+  const existing = await getMembershipById(tx, membershipId)
+  return (
+    existingMemberships === 1 &&
+    existing !== null &&
+    existing.workspaceId === targetWorkspaceId &&
+    existing.userId === ctx.userId &&
+    existing.role === 'admin'
+  )
 }
 
 /**

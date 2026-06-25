@@ -10,7 +10,7 @@ import {
   powersyncTablesByName,
 } from '@/db/powersync-schema'
 import type { PowerSyncTableName } from '@shared/powersync-tables'
-import { type WorkspacePermissionKey } from '@shared/workspaces'
+import { computePersonalWorkspaceId, type WorkspacePermissionKey } from '@shared/workspaces'
 import { and, eq } from 'drizzle-orm'
 import type { AnyPgColumn, AnyPgTable } from 'drizzle-orm/pg-core'
 import { allow, callerSatisfiesPermission, reject, toSchemaRecord } from './helpers'
@@ -220,10 +220,10 @@ export const createWorkspaceScopedHandler = (cfg: WorkspaceScopedConfig): Upload
           workspaceId: targetWorkspaceId ?? undefined,
           userId: ctx.userId,
         })
-        const resolvedWorkspaceId = targetWorkspaceId ?? existing?.workspaceId
-        if (!resolvedWorkspaceId) {
-          return reject('permanent', 'WORKSPACE_ID_REQUIRED')
-        }
+        // Stale pre-Workspaces clients PUT rows without a `workspace_id`. Route
+        // them into the caller's personal workspace (the FE migration would land
+        // them there anyway after upgrade); avoids losing creates during rollout.
+        const resolvedWorkspaceId = targetWorkspaceId ?? existing?.workspaceId ?? computePersonalWorkspaceId(ctx.userId)
         if (!(await isWorkspaceMember(tx, resolvedWorkspaceId, ctx.userId))) {
           return reject('permanent', 'NOT_WORKSPACE_MEMBER')
         }
@@ -293,10 +293,8 @@ export const createWorkspaceScopedHandler = (cfg: WorkspaceScopedConfig): Upload
           const targetWorkspaceId = isString(op.data?.workspace_id) ? op.data.workspace_id : null
           const resolvedWorkspaceId =
             targetWorkspaceId ??
-            (await fetchRowScope(tx, tableName, op.id, scopeAware, { userId: ctx.userId }))?.workspaceId
-          if (!resolvedWorkspaceId) {
-            throw new UploadRejection('permanent', 'WORKSPACE_ID_REQUIRED')
-          }
+            (await fetchRowScope(tx, tableName, op.id, scopeAware, { userId: ctx.userId }))?.workspaceId ??
+            computePersonalWorkspaceId(ctx.userId)
 
           const payload = { ...(op.data ?? {}) } as Record<string, unknown>
           delete payload.id
