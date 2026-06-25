@@ -120,12 +120,6 @@ export const modelsTable = sqliteTable(
   ],
 )
 
-/** Local-only table for model API keys. Never synced via PowerSync. */
-export const modelsSecretsTable = sqliteTable('models_secrets', {
-  modelId: text('id').primaryKey(),
-  apiKey: text('api_key'),
-})
-
 /** Local-only table for integration credentials (Google, Microsoft OAuth tokens). Never synced via PowerSync. */
 export const integrationsSecretsTable = sqliteTable('integrations_secrets', {
   provider: text('id').primaryKey(), // 'google' | 'microsoft'

@@ -13,7 +13,6 @@ import {
   integrationsSecretsTable,
   mcpSecretsTable,
   mcpServersTable,
-  modelsSecretsTable,
   modelsTable,
   settingsTable,
   tasksTable,
@@ -53,7 +52,6 @@ describe('Export DAL', () => {
       'mcp_servers',
       'model_profiles',
       'models',
-      'models_secrets',
       'modes',
       'prompts',
       'settings',
@@ -80,8 +78,7 @@ describe('Export DAL', () => {
       { key: 'pref:a', value: 'a' },
       { key: 'pref:b', value: 'b' },
     ])
-    await db.insert(modelsTable).values({ id: 'model-1', provider: 'custom', name: 'Mine' })
-    await db.insert(modelsSecretsTable).values({ modelId: 'model-1', apiKey: 'sk-mine' })
+    await db.insert(modelsTable).values({ id: 'model-1', provider: 'custom', name: 'Mine', apiKey: 'sk-mine' })
     await db.insert(agentsTable).values({
       id: 'agent-1',
       userId: 'user-1',
@@ -100,7 +97,7 @@ describe('Export DAL', () => {
     expect(exported.tables.tasks).toHaveLength(2)
     expect(exported.tables.settings).toHaveLength(2)
     expect(exported.tables.models).toHaveLength(1)
-    expect(exported.tables.models_secrets).toHaveLength(1)
+    expect((exported.tables.models[0] as { apiKey: string | null }).apiKey).toBe('sk-mine')
     expect(exported.tables.agents).toHaveLength(1)
     expect(exported.tables.agents_secrets).toHaveLength(1)
     expect(exported.tables.mcp_servers).toHaveLength(1)

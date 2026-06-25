@@ -31,10 +31,6 @@ export const syncedTables = {
 
 /** Local-only tables — created in SQLite but never synced via PowerSync. */
 export const localOnlyTables = {
-  models_secrets: {
-    tableDefinition: tables.modelsSecretsTable,
-    options: { localOnly: true },
-  } satisfies DrizzleTableWithPowerSyncOptions,
   integrations_secrets: {
     tableDefinition: tables.integrationsSecretsTable,
     options: { localOnly: true },

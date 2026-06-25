@@ -36,7 +36,8 @@ export const syncedLegacyTables: readonly LegacyTable[] = [
 
 export const localLegacyTables: readonly LegacyTable[] = [
   { name: 'mcp_servers', needsWorkspaceId: true, needsScope: false },
-  { name: 'models_secrets', needsWorkspaceId: false, needsScope: false },
+  // models_secrets is intentionally absent: its api_key value is folded into
+  // models.api_key by the local-db-migration (THU-579 reverts THU-505).
   { name: 'integrations_secrets', needsWorkspaceId: false, needsScope: false },
   { name: 'mcp_secrets', needsWorkspaceId: false, needsScope: false },
   { name: 'agents_secrets', needsWorkspaceId: false, needsScope: false },

@@ -4,32 +4,21 @@
 
 import { and, desc, eq, getTableColumns, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { AnyDrizzleDatabase } from '../db/database-interface'
-import { modelsSecretsTable, modelsTable, settingsTable } from '../db/tables'
+import { modelsTable, settingsTable } from '../db/tables'
 import { hashModel } from '../defaults/models'
 import { clearNullableColumns, nowIso } from '../lib/utils'
 import type { DrizzleQueryWithPromise, Model } from '@/types'
 import { getLastMessage } from './chat-messages'
 import { createDefaultModelProfile, deleteModelProfileForModel } from './model-profiles'
 
-/** Select columns: all model columns + apiKey from the local-only secrets table. */
-const modelWithSecretColumns = {
-  ...getTableColumns(modelsTable),
-  apiKey: modelsSecretsTable.apiKey,
-}
-
-/** Base query that LEFT JOINs models with their local-only secrets. */
-const selectModelsWithSecrets = (db: AnyDrizzleDatabase) =>
-  db
-    .select(modelWithSecretColumns)
-    .from(modelsTable)
-    .leftJoin(modelsSecretsTable, eq(modelsTable.id, modelsSecretsTable.modelId))
-
 /**
  * Gets all models in the given workspace (excluding soft-deleted), sorted with
  * system models first, then alphabetically by name.
  */
 export const getAllModels = (db: AnyDrizzleDatabase, workspaceId: string) => {
-  const query = selectModelsWithSecrets(db)
+  const query = db
+    .select()
+    .from(modelsTable)
     .where(and(eq(modelsTable.workspaceId, workspaceId), isNull(modelsTable.deletedAt)))
     .orderBy(desc(modelsTable.isSystem), modelsTable.name)
 
@@ -41,7 +30,9 @@ export const getAllModels = (db: AnyDrizzleDatabase, workspaceId: string) => {
  * sorted with system models first, then alphabetically by name.
  */
 export const getAvailableModels = (db: AnyDrizzleDatabase, workspaceId: string) => {
-  const query = selectModelsWithSecrets(db)
+  const query = db
+    .select()
+    .from(modelsTable)
     .where(and(eq(modelsTable.workspaceId, workspaceId), eq(modelsTable.enabled, 1), isNull(modelsTable.deletedAt)))
     .orderBy(desc(modelsTable.isSystem), modelsTable.name)
 
@@ -49,9 +40,10 @@ export const getAvailableModels = (db: AnyDrizzleDatabase, workspaceId: string) 
 }
 
 export const getModelQuery = (db: AnyDrizzleDatabase, workspaceId: string, id: string) => {
-  const query = selectModelsWithSecrets(db).where(
-    and(eq(modelsTable.id, id), eq(modelsTable.workspaceId, workspaceId), isNull(modelsTable.deletedAt)),
-  )
+  const query = db
+    .select()
+    .from(modelsTable)
+    .where(and(eq(modelsTable.id, id), eq(modelsTable.workspaceId, workspaceId), isNull(modelsTable.deletedAt)))
 
   return query as typeof query & DrizzleQueryWithPromise<Model>
 }
@@ -63,7 +55,11 @@ export const getModelQuery = (db: AnyDrizzleDatabase, workspaceId: string, id: s
  * enabled; otherwise the system model.
  */
 export const getSelectedModelQuery = (db: AnyDrizzleDatabase, workspaceId: string) => {
-  const query = selectModelsWithSecrets(db)
+  // Explicit column projection — without it Drizzle nests joined rows as
+  // `{ models: …, settings: … }` and downstream `as Model` casts break.
+  const query = db
+    .select(getTableColumns(modelsTable))
+    .from(modelsTable)
     .leftJoin(
       settingsTable,
       and(eq(settingsTable.key, 'selected_model'), eq(settingsTable.value, modelsTable.id), eq(modelsTable.enabled, 1)),
@@ -90,7 +86,9 @@ export const getModel = async (db: AnyDrizzleDatabase, workspaceId: string, id: 
 }
 
 export const getSystemModel = async (db: AnyDrizzleDatabase, workspaceId: string): Promise<Model | null> => {
-  const systemModel = await selectModelsWithSecrets(db)
+  const systemModel = await db
+    .select()
+    .from(modelsTable)
     .where(and(eq(modelsTable.workspaceId, workspaceId), eq(modelsTable.isSystem, 1), isNull(modelsTable.deletedAt)))
     .orderBy(modelsTable.name)
     .get()
@@ -155,30 +153,17 @@ export const updateModel = async (
   // (the row stays in the workspace it was filtered to — callers can't reassign).
   const {
     defaultHash,
-    apiKey,
     workspaceId: _workspaceId,
     ...updateFields
   } = updates as Partial<Model> & { defaultHash?: string }
 
-  await db.transaction(async (tx) => {
-    if (Object.keys(updateFields).length > 0) {
-      await tx
-        .update(modelsTable)
-        .set(updateFields)
-        .where(and(eq(modelsTable.id, id), eq(modelsTable.workspaceId, workspaceId)))
-    }
-
-    // PowerSync exposes local-only tables as SQLite views, which don't support
-    // INSERT...ON CONFLICT DO UPDATE. Emulate UPSERT with SELECT-then-INSERT/UPDATE.
-    if (apiKey !== undefined) {
-      const existing = await tx.select().from(modelsSecretsTable).where(eq(modelsSecretsTable.modelId, id)).get()
-      if (existing) {
-        await tx.update(modelsSecretsTable).set({ apiKey }).where(eq(modelsSecretsTable.modelId, id))
-      } else if (apiKey != null) {
-        await tx.insert(modelsSecretsTable).values({ modelId: id, apiKey })
-      }
-    }
-  })
+  if (Object.keys(updateFields).length === 0) {
+    return
+  }
+  await db
+    .update(modelsTable)
+    .set(updateFields)
+    .where(and(eq(modelsTable.id, id), eq(modelsTable.workspaceId, workspaceId)))
 }
 
 /**
@@ -197,20 +182,16 @@ export const resetModelToDefault = async (
 ): Promise<void> => {
   const {
     defaultHash,
-    apiKey,
     workspaceId: _seedWs,
     userId,
     ...defaultFields
   } = defaultModel as Model & {
     workspaceId?: string | null
   }
-  await db.transaction(async (tx) => {
-    await tx
-      .update(modelsTable)
-      .set({ ...defaultFields, defaultHash: hashModel(defaultModel) })
-      .where(and(eq(modelsTable.id, id), eq(modelsTable.workspaceId, workspaceId)))
-    await tx.delete(modelsSecretsTable).where(eq(modelsSecretsTable.modelId, id))
-  })
+  await db
+    .update(modelsTable)
+    .set({ ...defaultFields, defaultHash: hashModel(defaultModel) })
+    .where(and(eq(modelsTable.id, id), eq(modelsTable.workspaceId, workspaceId)))
 }
 
 /**
@@ -225,7 +206,6 @@ export const deleteModel = async (db: AnyDrizzleDatabase, workspaceId: string, i
   await db.transaction(async (tx) => {
     await deleteModelProfileForModel(tx, workspaceId, id)
     await deletePromptsForModel(tx, workspaceId, id)
-    await tx.delete(modelsSecretsTable).where(eq(modelsSecretsTable.modelId, id))
     await tx
       .update(modelsTable)
       .set({ ...clearNullableColumns(modelsTable), deletedAt: nowIso() })
@@ -243,12 +223,9 @@ export const createModel = async (
   workspaceId: string,
   data: Partial<Model> & Pick<Model, 'id' | 'provider' | 'name' | 'model'>,
 ): Promise<void> => {
-  const { apiKey, scope, ...modelData } = data
+  const { scope, ...modelData } = data
   await db.transaction(async (tx) => {
     await tx.insert(modelsTable).values({ ...modelData, workspaceId, scope: scope ?? 'workspace' })
-    if (apiKey != null) {
-      await tx.insert(modelsSecretsTable).values({ modelId: data.id, apiKey })
-    }
     await createDefaultModelProfile(tx, workspaceId, data.id, scope ?? 'workspace')
   })
 }
