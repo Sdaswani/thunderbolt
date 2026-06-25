@@ -113,6 +113,13 @@ export const modelsTable = powersyncSchema.table(
     startWithReasoning: integer('start_with_reasoning').default(0),
     supportsParallelToolCalls: integer('supports_parallel_tool_calls').default(1),
     contextWindow: integer('context_window'),
+    // File-input capabilities, derived from the models.dev registry at model-add time
+    // (THU-624). Null = unknown → the client treats the model as text-only.
+    acceptsImages: integer('accepts_images'),
+    // JSON-encoded string[] of mime types the model ingests natively, e.g. ["application/pdf"].
+    nativeFileTypes: text('native_file_types'),
+    // Hard per-file byte ceiling, if known (models.dev doesn't model this; null → coarse client guard).
+    maxFileBytes: integer('max_file_bytes'),
     deletedAt: timestamp('deleted_at'),
     defaultHash: text('default_hash'),
     vendor: text('vendor'),
