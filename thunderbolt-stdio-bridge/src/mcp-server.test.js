@@ -7,7 +7,7 @@
 const { test, expect, mock } = require('bun:test')
 const { EventEmitter } = require('node:events')
 const { createHash } = require('node:crypto')
-const { startMcpFace, bearerMatches, BODY_ABORTED } = require('./mcp-server')
+const { startMcpFace, bearerMatches } = require('./mcp-server')
 
 /** SHA-256 digest a string to a 32-byte buffer, matching the expected-bearer digest. */
 const digest = (value) => createHash('sha256').update(value).digest()
@@ -205,6 +205,18 @@ test('bearerMatches: unequal-length inputs fail without throwing', () => {
   expect(bearerMatches('abc', digest('abc'))).toBe(true)
 })
 
+test('bearerMatches: a SAME-LENGTH near-miss (32-byte digests differing by one byte) → false', () => {
+  // Both operands are always 32-byte sha256 digests, so this exercises the real
+  // constant-time path: equal-length buffers that differ in exactly one byte.
+  const provided = 'sekret'
+  const nearMiss = Buffer.from(digest(provided)) // copy of sha256(provided)
+  nearMiss[0] ^= 0x01 // flip a single bit in one byte
+  expect(nearMiss).toHaveLength(32)
+  expect(bearerMatches(provided, nearMiss)).toBe(false)
+  // Sanity: the un-flipped digest still matches.
+  expect(bearerMatches(provided, digest(provided))).toBe(true)
+})
+
 test('CORS preflight (OPTIONS) returns 204 and allow-origin per allowlist', async () => {
   const logger = makeLogger()
   const { server, deps } = makeHarness()
@@ -274,10 +286,6 @@ test('a client that closes the POST socket before end is dropped: no reply, no h
   expect(transport.handleRequest).not.toHaveBeenCalled()
 })
 
-test('BODY_ABORTED is an exported sentinel distinct from a real body', () => {
-  expect(typeof BODY_ABORTED).toBe('symbol')
-})
-
 test('a disallowed Origin is not granted CORS access', async () => {
   const logger = makeLogger()
   const { server, deps } = makeHarness()
@@ -286,6 +294,51 @@ test('a disallowed Origin is not granted CORS access', async () => {
   const res = makeRes()
   await fireRequest(server, req, res)
   expect(res.headers['Access-Control-Allow-Origin']).toBeUndefined()
+})
+
+test('a present, disallowed Origin POST is hard-rejected 403 server-side and NOT dispatched', async () => {
+  const logger = makeLogger()
+  const { server, transport, deps } = makeHarness()
+  await startMcpFace(baseOpts(logger, deps))
+  // A cross-origin simple POST is not preflighted; the server-side gate must
+  // reject it (CSRF defense) rather than merely withholding the ACAO header.
+  const req = makeReq({ headers: { origin: 'http://evil.com' }, body: '{"jsonrpc":"2.0","method":"tools/call","id":1}' })
+  const res = makeRes()
+  await fireRequest(server, req, res)
+  expect(res.statusCode).toBe(403)
+  expect(transport.handleRequest).not.toHaveBeenCalled()
+})
+
+test('an absent Origin is allowed (non-browser client) and dispatched', async () => {
+  const logger = makeLogger()
+  const { server, transport, deps } = makeHarness()
+  await startMcpFace(baseOpts(logger, deps))
+  const req = makeReq({ headers: {}, body: '{"jsonrpc":"2.0","method":"ping","id":1}' })
+  const res = makeRes()
+  await fireRequest(server, req, res)
+  expect(res.statusCode).not.toBe(403)
+  expect(transport.handleRequest).toHaveBeenCalledTimes(1)
+})
+
+test('an allowed (loopback) Origin POST passes the gate and is dispatched', async () => {
+  const logger = makeLogger()
+  const { server, transport, deps } = makeHarness()
+  await startMcpFace(baseOpts(logger, deps))
+  const req = makeReq({ headers: { origin: 'http://localhost:5173' }, body: '{"jsonrpc":"2.0","method":"ping","id":1}' })
+  const res = makeRes()
+  await fireRequest(server, req, res)
+  expect(transport.handleRequest).toHaveBeenCalledTimes(1)
+})
+
+test('--allow-any-origin lets any Origin (incl. evil.com) through the gate and dispatch', async () => {
+  const logger = makeLogger()
+  const { server, transport, deps } = makeHarness()
+  await startMcpFace(baseOpts(logger, deps, { allowAnyOrigin: true }))
+  const req = makeReq({ headers: { origin: 'http://evil.com' }, body: '{"jsonrpc":"2.0","method":"ping","id":1}' })
+  const res = makeRes()
+  await fireRequest(server, req, res)
+  expect(res.statusCode).not.toBe(403)
+  expect(transport.handleRequest).toHaveBeenCalledTimes(1)
 })
 
 test('body exceeding bodyCapBytes → 413 and is not dispatched', async () => {
@@ -332,6 +385,46 @@ test('POST /mcp is dispatched to transport.handleRequest with the parsed body', 
   expect(parsed).toEqual({ jsonrpc: '2.0', method: 'initialize', id: 1 })
 })
 
+test('GET /mcp is dispatched to transport.handleRequest (SSE stream open)', async () => {
+  const logger = makeLogger()
+  const { server, transport, deps } = makeHarness()
+  await startMcpFace(baseOpts(logger, deps))
+  const req = makeReq({ method: 'GET', url: '/mcp' })
+  const res = makeRes()
+  await fireRequest(server, req, res)
+  expect(transport.handleRequest).toHaveBeenCalledTimes(1)
+  // GET carries no body: handleRequest is invoked with exactly two args.
+  expect(transport.handleRequest.mock.calls[0]).toHaveLength(2)
+})
+
+test('DELETE /mcp is dispatched to transport.handleRequest (session teardown)', async () => {
+  const logger = makeLogger()
+  const { server, transport, deps } = makeHarness()
+  await startMcpFace(baseOpts(logger, deps))
+  const req = makeReq({ method: 'DELETE', url: '/mcp' })
+  const res = makeRes()
+  await fireRequest(server, req, res)
+  expect(transport.handleRequest).toHaveBeenCalledTimes(1)
+  expect(transport.handleRequest.mock.calls[0]).toHaveLength(2)
+})
+
+test('a rejecting transport.handleRequest is swallowed + logged, never escapes', async () => {
+  const logger = makeLogger()
+  const { server, transport, deps } = makeHarness()
+  transport.handleRequest = mock(() => Promise.reject(Object.assign(new Error('gone'), { code: 'ERR_CLOSED' })))
+  const rejections = []
+  const onRejection = (err) => rejections.push(err)
+  process.on('unhandledRejection', onRejection)
+  await startMcpFace(baseOpts(logger, deps))
+  const req = makeReq({ method: 'GET', url: '/mcp' })
+  const res = makeRes()
+  await fireRequest(server, req, res)
+  await new Promise((r) => setTimeout(r, 0))
+  process.removeListener('unhandledRejection', onRejection)
+  expect(rejections).toHaveLength(0)
+  expect(logger.warn).toHaveBeenCalled()
+})
+
 test('HTTP onmessage relays to child stdin as one NDJSON line', async () => {
   const logger = makeLogger()
   const { transport, calls, deps } = makeHarness()
@@ -348,6 +441,24 @@ test('child stdout NDJSON lines are parsed and sent to the transport', async () 
   hooks.onStdout(Buffer.from('{"jsonrpc":"2.0","result":{},"id":7}\n'))
   expect(transport.send).toHaveBeenCalledTimes(1)
   expect(transport.send.mock.calls[0][0]).toEqual({ jsonrpc: '2.0', result: {}, id: 7 })
+})
+
+test('a rejecting transport.send (disconnected client) is swallowed + logged, never escapes', async () => {
+  const logger = makeLogger()
+  const { transport, hooks, deps } = makeHarness()
+  // A stale/disconnected client makes the SDK reject; this must not surface as an
+  // unhandledRejection (which the CLI's onFatal backstop would treat as fatal).
+  transport.send = mock(() => Promise.reject(Object.assign(new Error('closed'), { code: 'ERR_CLOSED' })))
+  const rejections = []
+  const onRejection = (err) => rejections.push(err)
+  process.on('unhandledRejection', onRejection)
+  await startMcpFace(baseOpts(logger, deps))
+  hooks.onStdout(Buffer.from('{"jsonrpc":"2.0","result":{},"id":7}\n'))
+  await new Promise((r) => setTimeout(r, 0))
+  process.removeListener('unhandledRejection', onRejection)
+  expect(rejections).toHaveLength(0)
+  expect(transport.send).toHaveBeenCalledTimes(1)
+  expect(logger.warn).toHaveBeenCalled()
 })
 
 test('a malformed child stdout line is dropped + logged by method/id only, never sent', async () => {
@@ -396,6 +507,20 @@ test('close() closes transport, stops the child, and closes the server: no orpha
   expect(server.close).toHaveBeenCalled()
 })
 
+test('close() AFTER the child self-exited resolves (no hang) and is idempotent', async () => {
+  const logger = makeLogger()
+  const { hooks, deps } = makeHarness()
+  const face = await startMcpFace(baseOpts(logger, deps))
+  // Drive the child self-exit first: this settles the close latch via finishClose.
+  hooks.onExit({ code: 0, signal: null })
+  // A close() on the already-settled latch must resolve immediately (setResolver
+  // runs the resolver synchronously) rather than wait forever for a finishClose
+  // that already fired.
+  await face.close()
+  // Idempotent: a second close() also resolves.
+  await face.close()
+})
+
 test('close() force-closes lingering sockets and resolves deterministically (no hang)', async () => {
   const logger = makeLogger()
   const { server, deps } = makeHarness()
@@ -416,7 +541,7 @@ test('the resolved face exposes kill() which immediately SIGKILLs the child', as
   expect(calls.killed).toBe(1)
 })
 
-test('a spawn ENOENT rejects with an unavailable error and SIGKILLs the child first', async () => {
+test('a spawn ENOENT rejects with an unavailable error and only closes the server (no kill — there is no child)', async () => {
   const logger = makeLogger()
   const { server, hooks, calls, deps } = makeHarness()
   const promise = startMcpFace(baseOpts(logger, deps))
@@ -424,6 +549,8 @@ test('a spawn ENOENT rejects with an unavailable error and SIGKILLs the child fi
   hooks.onSpawnError(Object.assign(new Error('enoent'), { code: 'ENOENT' }))
   await expect(promise).rejects.toMatchObject({ name: 'UnavailableError', code: 'ENOENT' })
   expect(server.close).toHaveBeenCalled()
+  // The child never spawned, so onSpawnError must not attempt a kill.
+  expect(calls.killed).toBe(0)
 })
 
 test('a bind failure rejects with an unavailable error and SIGKILLs the child first', async () => {

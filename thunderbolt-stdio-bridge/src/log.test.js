@@ -5,7 +5,7 @@
 'use strict'
 
 const { test, expect } = require('bun:test')
-const { makeLogger, buildOriginAllowlist, classifyMethod, classifyId } = require('./log')
+const { makeLogger, buildOriginAllowlist, classifyMethod, classifyId, classifyFrame, safeClassifyFrame } = require('./log')
 
 /** A fake writable sink that records every written line. */
 const makeSink = () => {
@@ -116,6 +116,18 @@ test('classifyId distinguishes request/response/notification/absent without leak
   expect(classifyId({ id: 42, result: {} })).toBe('response')
   expect(classifyId({ method: 'notifications/progress' })).toBe('notification')
   expect(classifyId({})).toBe('absent')
+})
+
+test('classifyFrame(null) → the inert no-leak fallback shape', () => {
+  expect(classifyFrame(null)).toEqual({ method: 'unknown', id: 'absent' })
+})
+
+test('safeClassifyFrame: a bad-JSON raw string → the inert { method: unknown, id: absent } fallback', () => {
+  expect(safeClassifyFrame('{bad json')).toEqual({ method: 'unknown', id: 'absent' })
+})
+
+test('safeClassifyFrame: a well-formed request frame → { method, id: request } and never the id value', () => {
+  expect(safeClassifyFrame('{"method":"x","id":1}')).toEqual({ method: 'x', id: 'request' })
 })
 
 test('error() logs the passed errorCode and never a message/stack string', () => {

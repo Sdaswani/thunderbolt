@@ -17,7 +17,7 @@ const { makeLogger } = require('../src/log')
 const { insecureFlagWarnings } = require('../src/util')
 const { startBridge } = require('../src/server')
 const { startMcpFace } = require('../src/mcp-server')
-const { startTunnel } = require('../src/tunnel')
+const { startTunnel, generateBearer } = require('../src/tunnel')
 
 // esbuild inlines this; a fallback keeps the un-bundled bin runnable from source.
 const BRIDGE_VERSION = typeof __BRIDGE_VERSION__ !== 'undefined' ? __BRIDGE_VERSION__ : '0.0.0-dev'
@@ -50,7 +50,7 @@ Options:
  * @param {NodeJS.WritableStream} [opts.stdout] - help/version sink only.
  * @param {NodeJS.WritableStream} [opts.stderr] - all diagnostics + banner.
  * @param {(code: number) => void} [opts.exit]
- * @param {Object} [opts.deps] - injectable { startBridge, startMcpFace, startTunnel, makeLogger, on, removeListener }.
+ * @param {Object} [opts.deps] - injectable { startBridge, startMcpFace, startTunnel, generateBearer, makeLogger, on, removeListener }.
  * @returns {Promise<void>}
  */
 const run = async ({
@@ -63,6 +63,7 @@ const run = async ({
   const _startBridge = deps.startBridge ?? startBridge
   const _startMcpFace = deps.startMcpFace ?? startMcpFace
   const _startTunnel = deps.startTunnel ?? startTunnel
+  const _generateBearer = deps.generateBearer ?? generateBearer
   const _makeLogger = deps.makeLogger ?? makeLogger
   const onSignal = deps.on ?? process.on.bind(process)
   const offSignal = deps.removeListener ?? process.removeListener.bind(process)
@@ -161,29 +162,26 @@ const run = async ({
       return
     }
 
-    // mode === 'mcp'
-    const bearerSource = parsed.tunnel
-      ? await (async () => {
-          const tunnel = await _startTunnel({
-            localUrl: `http://127.0.0.1:${parsed.port}/mcp`,
-            logger,
-          })
-          live.tunnel = tunnel
-          return tunnel.bearer
-        })()
-      : undefined
-
+    // mode === 'mcp'. Mint the bearer first, bind the face, THEN tunnel to the
+    // face's REAL bound URL — never a pre-bind port-0 placeholder. The same
+    // bearer fronts both the local face and the public tunnel.
+    const bearer = parsed.tunnel ? _generateBearer() : undefined
     const face = await _startMcpFace({
       launch: parsed.launch,
       host: parsed.host,
       port: parsed.port,
-      bearer: bearerSource,
+      bearer,
       allowOrigins: parsed.allowOrigins,
       allowAnyOrigin: parsed.allowAnyOrigin,
       logger,
       onChildExit,
     })
     live.face = face
+
+    if (parsed.tunnel) {
+      // If the tunnel fails here the catch path reaps live.face — never-orphan.
+      live.tunnel = await _startTunnel({ localUrl: face.url, bearer, logger })
+    }
     return
   } catch (err) {
     await reap() // never-orphan before exiting on any fatal path

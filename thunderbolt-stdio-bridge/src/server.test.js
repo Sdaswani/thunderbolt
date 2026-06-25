@@ -150,18 +150,18 @@ test('a listen EADDRINUSE rejects with an unavailable error and SIGKILLs the chi
   expect(sup.kill).toHaveBeenCalledTimes(1)
 })
 
-test('Origin gate rejects a disallowed Origin and accepts a loopback/undefined Origin', async () => {
-  const { getOpts, promise } = start()
+test('Origin gate rejects a disallowed Origin and accepts a loopback/undefined Origin', () => {
+  // verifyClient is captured synchronously at WebSocketServer construction, so
+  // this asserts the gate predicate without resolving the (intentionally
+  // unobserved) listening promise.
+  const { getOpts } = start()
   const verifyClient = getOpts().verifyClient
   expect(verifyClient({ origin: 'http://evil.com' })).toBe(false)
   expect(verifyClient({ origin: 'http://localhost:3000' })).toBe(true)
   expect(verifyClient({ origin: undefined })).toBe(true)
-  // resolve the dangling promise
-  getOpts() // noop; clean up by emitting listening through a fresh handle below
-  await Promise.resolve()
 })
 
-test('--allow-any-origin accepts any Origin (gate disabled)', async () => {
+test('--allow-any-origin accepts any Origin (gate disabled)', () => {
   const { getOpts } = start({ allowAnyOrigin: true })
   expect(getOpts().verifyClient({ origin: 'http://evil.com' })).toBe(true)
 })
@@ -424,6 +424,36 @@ test('child exit closes the server + client(1000) and resolves close()', async (
   expect(wssRef.closed).toBe(true)
   expect(onChildExit).toHaveBeenCalledWith({ code: 0, signal: null })
   // close() resolves even after the child already exited.
+  await face.close()
+})
+
+test('close() AFTER the child self-exited resolves (no hang) and is idempotent', async () => {
+  let wssRef
+  const { FakeWss } = makeFakeWss()
+  class Capture extends FakeWss {
+    constructor(o) {
+      super(o)
+      wssRef = this
+    }
+  }
+  const { sup, factory } = makeFakeSupervisor()
+  const p = startBridge({
+    launch: ['x'],
+    host: '127.0.0.1',
+    port: 0,
+    allowOrigins: [],
+    allowAnyOrigin: false,
+    logger: noopLogger,
+    deps: { WebSocketServer: Capture, superviseChild: factory },
+  })
+  wssRef.emit('listening')
+  const face = await p
+  // Drive the child self-exit first: this settles the close latch via finishClose.
+  sup.onExit({ code: 0, signal: null })
+  // close() on the already-settled latch resolves immediately (setResolver runs
+  // the resolver synchronously) rather than hang on a finishClose that already fired.
+  await face.close()
+  // Idempotent: a second close() also resolves.
   await face.close()
 })
 

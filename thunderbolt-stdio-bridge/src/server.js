@@ -172,15 +172,11 @@ const startBridge = ({
         kill: () => supervisor.kill(), // immediate SIGKILL — never-orphan backstop
         close: () =>
           new Promise((resolveOuter) => {
-            // Already torn down (e.g. child exited first): resolve immediately.
-            if (latch.settled()) {
-              supervisor.stop() // idempotent no-op once the child is gone
-              resolveOuter()
-              return
-            }
+            // If the child already exited the latch is settled and setResolver
+            // resolves synchronously; otherwise the resolver fires on finishClose.
             latch.setResolver(resolveOuter)
             if (client) client.close(CLOSE_NORMAL)
-            supervisor.stop() // grace -> SIGKILL, never-orphan
+            supervisor.stop() // grace -> SIGKILL (idempotent once gone), never-orphan
             wss.close(finishClose)
           }),
       })

@@ -17,10 +17,12 @@ const makeSink = () => {
 const makeHarness = (over = {}) => {
   const signals = {}
   const face = { url: 'ws://127.0.0.1:5000', close: mock(async () => {}), kill: mock(() => {}) }
+  const mcpFace = { url: 'http://127.0.0.1:54321/mcp', close: mock(async () => {}), kill: mock(() => {}) }
   const tunnel = { publicUrl: 'https://x.trycloudflare.com', bearer: 'secret', close: mock(async () => {}) }
   const startBridge = mock(async () => face)
-  const startMcpFace = mock(async () => face)
+  const startMcpFace = mock(async () => mcpFace)
   const startTunnel = mock(async () => tunnel)
+  const generateBearer = mock(() => 'minted-bearer')
   const logger = { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}), banner: mock(() => {}) }
   const makeLogger = mock(() => logger)
   const exit = mock(() => {})
@@ -30,6 +32,7 @@ const makeHarness = (over = {}) => {
     startBridge,
     startMcpFace,
     startTunnel,
+    generateBearer,
     makeLogger,
     on: (sig, fn) => {
       signals[sig] = fn
@@ -37,7 +40,22 @@ const makeHarness = (over = {}) => {
     removeListener: () => {},
     ...over.deps,
   }
-  return { face, tunnel, startBridge, startMcpFace, startTunnel, logger, makeLogger, exit, stdout, stderr, signals, deps }
+  return {
+    face,
+    mcpFace,
+    tunnel,
+    startBridge,
+    startMcpFace,
+    startTunnel,
+    generateBearer,
+    logger,
+    makeLogger,
+    exit,
+    stdout,
+    stderr,
+    signals,
+    deps,
+  }
 }
 
 test('--help prints usage to stdout and exits 0 (no child spawned)', async () => {
@@ -79,8 +97,19 @@ test('--mode acp -- <cmd> dispatches to startBridge with parsed launch + options
   expect(arg.allowOrigins).toEqual(['http://a'])
 })
 
-test('--mode mcp -- <cmd> dispatches to startMcpFace; --tunnel invokes startTunnel and threads bearer', async () => {
+test('--mode mcp --tunnel: face binds BEFORE the tunnel, which targets the face url with the same minted bearer', async () => {
   const h = makeHarness()
+  const order = []
+  const startMcpFace = mock(async () => {
+    order.push('face')
+    return h.mcpFace
+  })
+  const startTunnel = mock(async () => {
+    order.push('tunnel')
+    return h.tunnel
+  })
+  h.deps.startMcpFace = startMcpFace
+  h.deps.startTunnel = startTunnel
   await run({
     argv: ['--mode', 'mcp', '--tunnel', '--', 'srv'],
     stdout: h.stdout,
@@ -88,9 +117,16 @@ test('--mode mcp -- <cmd> dispatches to startMcpFace; --tunnel invokes startTunn
     exit: h.exit,
     deps: h.deps,
   })
-  expect(h.startTunnel).toHaveBeenCalledTimes(1)
-  expect(h.startMcpFace).toHaveBeenCalledTimes(1)
-  expect(h.startMcpFace.mock.calls[0][0].bearer).toBe('secret')
+  expect(startMcpFace).toHaveBeenCalledTimes(1)
+  expect(startTunnel).toHaveBeenCalledTimes(1)
+  // The face must bind before the tunnel so the tunnel targets a REAL bound url.
+  expect(order).toEqual(['face', 'tunnel'])
+  // The tunnel points at the face's resolved url — never a pre-bind port-0 placeholder.
+  expect(startTunnel.mock.calls[0][0].localUrl).toBe(h.mcpFace.url)
+  // One bearer is minted and threaded into BOTH the face and the tunnel.
+  expect(h.generateBearer).toHaveBeenCalledTimes(1)
+  expect(startMcpFace.mock.calls[0][0].bearer).toBe('minted-bearer')
+  expect(startTunnel.mock.calls[0][0].bearer).toBe('minted-bearer')
 })
 
 test('--mode mcp without --tunnel does not start a tunnel and bearer is undefined', async () => {

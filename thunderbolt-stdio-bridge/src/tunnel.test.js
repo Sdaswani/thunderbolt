@@ -6,7 +6,7 @@
 
 const { test, expect, mock } = require('bun:test')
 const { EventEmitter } = require('node:events')
-const { startTunnel, BEARER_BYTES } = require('./tunnel')
+const { startTunnel, generateBearer, BEARER_BYTES } = require('./tunnel')
 
 /** Capturing logger that records every event/text line written. */
 const makeLogger = () => {
@@ -34,19 +34,11 @@ const makeChild = () => {
   return child
 }
 
-/** Deterministic randomBytes returning a fixed-byte buffer of length n. */
-const fixedRandomBytes = (fill) => (n) => Buffer.alloc(n, fill)
-
 test('spawns cloudflared with `tunnel --url <localUrl>`', async () => {
   const logger = makeLogger()
   const child = makeChild()
   const spawn = mock(() => child)
-  const promise = startTunnel({
-    localUrl: 'http://127.0.0.1:5000/mcp',
-    logger,
-    spawn,
-    randomBytes: fixedRandomBytes(1),
-  })
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer: 'b', logger, spawn })
   child.stderr.emit('data', Buffer.from('INF |  https://happy-cloud-1.trycloudflare.com  |\n'))
   await promise
   expect(spawn).toHaveBeenCalledWith('cloudflared', ['tunnel', '--url', 'http://127.0.0.1:5000/mcp'])
@@ -55,44 +47,47 @@ test('spawns cloudflared with `tunnel --url <localUrl>`', async () => {
 test('parses the https://*.trycloudflare.com URL from stderr and resolves publicUrl', async () => {
   const logger = makeLogger()
   const child = makeChild()
-  const promise = startTunnel({
-    localUrl: 'http://127.0.0.1:5000/mcp',
-    logger,
-    spawn: () => child,
-    randomBytes: fixedRandomBytes(2),
-  })
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer: 'b', logger, spawn: () => child })
   child.stderr.emit('data', Buffer.from('2024 INF Your quick Tunnel: https://abc-def-ghi.trycloudflare.com\n'))
   const { publicUrl } = await promise
   expect(publicUrl).toBe('https://abc-def-ghi.trycloudflare.com')
 })
 
-test('generates a high-entropy bearer (>=256 bits) and returns it', async () => {
+test('the public URL is recognized when emitted SPLIT across two stderr chunks', async () => {
   const logger = makeLogger()
   const child = makeChild()
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer: 'b', logger, spawn: () => child })
+  child.stderr.emit('data', Buffer.from('2024 INF Your quick Tunnel: https://abc-'))
+  child.stderr.emit('data', Buffer.from('def.trycloudflare.com\n'))
+  const { publicUrl } = await promise
+  expect(publicUrl).toBe('https://abc-def.trycloudflare.com')
+})
+
+test('generateBearer mints a high-entropy (>=256 bits) base64url bearer from randomBytes', () => {
   let requestedBytes = 0
   const randomBytes = (n) => {
     requestedBytes = n
     return Buffer.alloc(n, 3)
   }
-  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', logger, spawn: () => child, randomBytes })
-  child.stderr.emit('data', Buffer.from('https://x.trycloudflare.com\n'))
-  const { bearer } = await promise
+  const bearer = generateBearer(randomBytes)
   expect(requestedBytes).toBe(BEARER_BYTES)
   expect(BEARER_BYTES * 8).toBeGreaterThanOrEqual(256)
   expect(bearer).toBe(Buffer.alloc(BEARER_BYTES, 3).toString('base64url'))
 })
 
+test('generateBearer produces distinct bearers for distinct randomBytes', () => {
+  const a = generateBearer((n) => Buffer.alloc(n, 1))
+  const b = generateBearer((n) => Buffer.alloc(n, 2))
+  expect(a).not.toBe(b)
+})
+
 test('the bearer is logged to stderr and NEVER appears in publicUrl or any query string', async () => {
   const logger = makeLogger()
   const child = makeChild()
-  const promise = startTunnel({
-    localUrl: 'http://127.0.0.1:5000/mcp',
-    logger,
-    spawn: () => child,
-    randomBytes: fixedRandomBytes(7),
-  })
+  const bearer = 'super-secret-bearer-value'
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer, logger, spawn: () => child })
   child.stderr.emit('data', Buffer.from('https://secret-tunnel.trycloudflare.com\n'))
-  const { publicUrl, bearer } = await promise
+  const { publicUrl } = await promise
   expect(publicUrl).not.toContain(bearer)
   expect(publicUrl).not.toContain('?')
   // The bearer must have been written to the (stderr) logger.
@@ -103,12 +98,7 @@ test('the bearer is logged to stderr and NEVER appears in publicUrl or any query
 test('cloudflared ENOENT rejects with an unavailable error (→69) and a "not found" message', async () => {
   const logger = makeLogger()
   const child = makeChild()
-  const promise = startTunnel({
-    localUrl: 'http://127.0.0.1:5000/mcp',
-    logger,
-    spawn: () => child,
-    randomBytes: fixedRandomBytes(1),
-  })
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer: 'b', logger, spawn: () => child })
   child.emit('error', Object.assign(new Error('spawn cloudflared ENOENT'), { code: 'ENOENT' }))
   await expect(promise).rejects.toMatchObject({ name: 'UnavailableError', code: 'ENOENT' })
   await expect(promise).rejects.toThrow(/not found/)
@@ -119,9 +109,9 @@ test('a timeout with no URL printed rejects with an unavailable error (→69) an
   const child = makeChild()
   const promise = startTunnel({
     localUrl: 'http://127.0.0.1:5000/mcp',
+    bearer: 'b',
     logger,
     spawn: () => child,
-    randomBytes: fixedRandomBytes(1),
     urlTimeoutMs: 5,
   })
   await expect(promise).rejects.toMatchObject({ name: 'UnavailableError' })
@@ -131,12 +121,7 @@ test('a timeout with no URL printed rejects with an unavailable error (→69) an
 test('close() SIGTERMs then SIGKILLs cloudflared (grace window): no orphan', async () => {
   const logger = makeLogger()
   const child = makeChild()
-  const promise = startTunnel({
-    localUrl: 'http://127.0.0.1:5000/mcp',
-    logger,
-    spawn: () => child,
-    randomBytes: fixedRandomBytes(1),
-  })
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer: 'b', logger, spawn: () => child })
   child.stderr.emit('data', Buffer.from('https://x.trycloudflare.com\n'))
   const { close } = await promise
   const closing = close()
@@ -150,12 +135,7 @@ test('close() SIGTERMs then SIGKILLs cloudflared (grace window): no orphan', asy
 test('close() is a no-op when cloudflared already exited', async () => {
   const logger = makeLogger()
   const child = makeChild()
-  const promise = startTunnel({
-    localUrl: 'http://127.0.0.1:5000/mcp',
-    logger,
-    spawn: () => child,
-    randomBytes: fixedRandomBytes(1),
-  })
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer: 'b', logger, spawn: () => child })
   child.stderr.emit('data', Buffer.from('https://x.trycloudflare.com\n'))
   const { close } = await promise
   child.exitCode = 0
@@ -163,20 +143,11 @@ test('close() is a no-op when cloudflared already exited', async () => {
   expect(child.signals).not.toContain('SIGTERM')
 })
 
-test('two runs produce distinct bearers (randomBytes-driven)', async () => {
+test('startTunnel returns the caller-supplied bearer verbatim', async () => {
   const logger = makeLogger()
-  const run = async (fill) => {
-    const child = makeChild()
-    const promise = startTunnel({
-      localUrl: 'http://127.0.0.1:5000/mcp',
-      logger,
-      spawn: () => child,
-      randomBytes: fixedRandomBytes(fill),
-    })
-    child.stderr.emit('data', Buffer.from('https://x.trycloudflare.com\n'))
-    return (await promise).bearer
-  }
-  const a = await run(1)
-  const b = await run(2)
-  expect(a).not.toBe(b)
+  const child = makeChild()
+  const promise = startTunnel({ localUrl: 'http://127.0.0.1:5000/mcp', bearer: 'caller-bearer', logger, spawn: () => child })
+  child.stderr.emit('data', Buffer.from('https://x.trycloudflare.com\n'))
+  const { bearer } = await promise
+  expect(bearer).toBe('caller-bearer')
 })

@@ -50,11 +50,13 @@ const isLoopbackHost = (host) => {
 }
 
 /**
- * A resolve-once close latch shared by both faces. `settle` runs the bound
+ * A resolve-once close latch shared by both faces. `finishClose` runs the bound
  * resolver exactly once (later calls are no-ops); `close()` first sets the
  * resolver then triggers teardown, so the resolver fires when teardown
- * completes. Centralizes the never-orphan teardown semantics so the two faces
- * can't drift.
+ * completes. If teardown already finished (e.g. the child self-exited before
+ * `close()` was called), `setResolver` runs the resolver immediately so a later
+ * `close()` never hangs waiting on an already-settled latch. Centralizes the
+ * never-orphan teardown semantics so the two faces can't drift.
  * @returns {{ finishClose: () => void, setResolver: (fn: () => void) => void, settled: () => boolean }}
  */
 const makeCloseLatch = () => {
@@ -67,6 +69,10 @@ const makeCloseLatch = () => {
       if (resolveClose) resolveClose()
     },
     setResolver: (fn) => {
+      if (settled) {
+        fn()
+        return
+      }
       resolveClose = fn
     },
     settled: () => settled,

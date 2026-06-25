@@ -2,12 +2,12 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-// Stand up a cloudflared quick tunnel in front of the local MCP face (MCP only)
-// and MINT a mandatory bearer. Spawns `cloudflared tunnel --url <localUrl>`,
-// parses the assigned *.trycloudflare.com URL from cloudflared's stderr, and
-// generates a high-entropy bearer. The bearer is printed to STDERR ONLY and
-// never embedded in the public URL or any query string — mcp-server.js compares
-// it constant-time on every request.
+// Stand up a cloudflared quick tunnel in front of the local MCP face (MCP only).
+// Spawns `cloudflared tunnel --url <localUrl>`, parses the assigned
+// *.trycloudflare.com URL from cloudflared's stderr, and fronts the face with a
+// caller-minted mandatory bearer. The bearer is printed to STDERR ONLY and never
+// embedded in the public URL or any query string — mcp-server.js compares it
+// constant-time on every request.
 
 'use strict'
 
@@ -21,33 +21,36 @@ const BEARER_BYTES = 32
 const GRACE_MS = 2000
 /** Give cloudflared this long to print its public URL before declaring it unavailable. */
 const URL_TIMEOUT_MS = 30000
+/** Cap the accumulated stderr buffer so a chatty cloudflared can't grow it unbounded. */
+const STDERR_BUFFER_CAP = 64 * 1024
 /** Matches the quick-tunnel URL cloudflared prints to its stderr. */
 const TRYCLOUDFLARE_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i
 
 /**
- * Start a cloudflared quick tunnel in front of `localUrl` and mint a mandatory
- * bearer. Resolves once cloudflared prints its public URL; rejects with an
- * UnavailableError if cloudflared is missing (ENOENT) or never prints a URL in
- * time. The bearer is logged to stderr and returned — never put in the URL.
+ * Mint a high-entropy bearer for fronting the MCP face. 32 bytes => 256 bits,
+ * base64url-encoded so it's safe to carry verbatim in an Authorization header.
+ *
+ * @param {(n: number) => Buffer} [randomBytes] - injectable crypto.randomBytes.
+ * @returns {string}
+ */
+const generateBearer = (randomBytes = defaultRandomBytes) => randomBytes(BEARER_BYTES).toString('base64url')
+
+/**
+ * Start a cloudflared quick tunnel in front of `localUrl`, fronted by the
+ * caller-supplied mandatory bearer. Resolves once cloudflared prints its public
+ * URL; rejects with an UnavailableError if cloudflared is missing (ENOENT) or
+ * never prints a URL in time. The bearer is logged to stderr — never put in the
+ * URL.
  *
  * @param {Object} opts
  * @param {string} opts.localUrl - the local MCP face URL to tunnel to.
+ * @param {string} opts.bearer - the mandatory bearer fronting the face.
  * @param {Object} opts.logger - PII-safe logger.
  * @param {Function} [opts.spawn] - injectable child_process.spawn.
- * @param {(n: number) => Buffer} [opts.randomBytes] - injectable crypto.randomBytes.
  * @param {number} [opts.urlTimeoutMs] - how long to wait for the public URL.
  * @returns {Promise<{ publicUrl: string, bearer: string, close(): Promise<void> }>}
  */
-const startTunnel = ({
-  localUrl,
-  logger,
-  spawn = defaultSpawn,
-  randomBytes = defaultRandomBytes,
-  urlTimeoutMs = URL_TIMEOUT_MS,
-}) => {
-  // Mandatory bearer: there is no unauthenticated tunnel path.
-  const bearer = randomBytes(BEARER_BYTES).toString('base64url')
-
+const startTunnel = ({ localUrl, bearer, logger, spawn = defaultSpawn, urlTimeoutMs = URL_TIMEOUT_MS }) => {
   return new Promise((resolve, reject) => {
     const settled = { done: false }
     const child = spawn('cloudflared', ['tunnel', '--url', localUrl])
@@ -63,6 +66,7 @@ const startTunnel = ({
     const close = () =>
       new Promise((resolveClose) => {
         if (child.exitCode !== null || child.signalCode !== null) {
+          clearGrace()
           resolveClose()
           return
         }
@@ -92,9 +96,13 @@ const startTunnel = ({
     })
 
     // cloudflared prints diagnostics — including the assigned URL — to stderr.
+    // Accumulate across chunks so a URL split over two `data` events still
+    // matches; cap the buffer so a chatty cloudflared can't grow it unbounded.
+    let stderrBuffer = ''
     child.stderr.on('data', (chunk) => {
       if (settled.done) return
-      const match = TRYCLOUDFLARE_RE.exec(chunk.toString('utf8'))
+      stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-STDERR_BUFFER_CAP)
+      const match = TRYCLOUDFLARE_RE.exec(stderrBuffer)
       if (!match) return
       settled.done = true
       clearTimeout(urlTimer)
@@ -109,4 +117,4 @@ const startTunnel = ({
   })
 }
 
-module.exports = { startTunnel, BEARER_BYTES, URL_TIMEOUT_MS }
+module.exports = { startTunnel, generateBearer, BEARER_BYTES, URL_TIMEOUT_MS }

@@ -188,7 +188,10 @@ const startMcpFace = ({
     }
 
     // child stdout NDJSON -> HTTP: each complete line is parsed and pushed to the
-    // transport, which routes it to the correct pending HTTP/SSE response.
+    // transport, which routes it to the correct pending HTTP/SSE response. The
+    // SDK's send can reject when the target client has disconnected — a benign,
+    // per-frame condition, not a bridge fault — so swallow it (logged PII-safe)
+    // instead of letting an unhandled rejection reach the never-orphan backstop.
     const reader = createNdjsonReader((line) => {
       const message = (() => {
         try {
@@ -198,7 +201,11 @@ const startMcpFace = ({
           return null
         }
       })()
-      if (message) transport.send(message)
+      if (message) {
+        Promise.resolve(transport.send(message)).catch(() =>
+          logger.warn('drop-child-frame', classifyFrame(message)),
+        )
+      }
     })
 
     const server = createServer()
@@ -232,11 +239,6 @@ const startMcpFace = ({
     })
 
     const applyCors = (req, res) => {
-      // Origin asymmetry vs the ACP face: ACP hard-rejects a disallowed Origin at
-      // the WebSocket upgrade (verifyClient), but a non-browser MCP client
-      // legitimately sends no Origin, so this face relies on browser-enforced CORS
-      // — it withholds the ACAO header for a disallowed Origin rather than
-      // rejecting the request server-side.
       const origin = req.headers.origin
       if (allowAnyOrigin) {
         res.setHeader('Access-Control-Allow-Origin', '*')
@@ -249,10 +251,39 @@ const startMcpFace = ({
       res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id')
     }
 
+    // Hand a request to the transport, swallowing a benign rejection (a client
+    // that disconnected mid-response). The SDK can reject from handleRequest the
+    // same way it can from send; a stale client is not a fatal bridge fault, so
+    // it must never reach the never-orphan backstop. Reply 500 only if the socket
+    // is still writable; otherwise the response is already gone — just drop. The
+    // caller-supplied thunk runs handleRequest with the right arity (the POST path
+    // always passes its parsed body, possibly undefined; GET/DELETE pass none).
+    const dispatch = (res, handle) => {
+      Promise.resolve(handle()).catch((err) => {
+        logger.warn('drop-http-frame', { errorCode: err && err.code })
+        if (res.writable && !res.writableEnded && !res.headersSent) replyStatus(res, 500)
+      })
+    }
+
     server.on('request', async (req, res) => {
-      // BEARER-BEFORE-ROUTE: the very first check, before CORS/routing/parsing.
+      // BEARER-BEFORE-ROUTE: the very first check, before the Origin gate, CORS,
+      // routing, or parsing.
       if (expectedDigest !== undefined && !bearerMatches(readBearer(req), expectedDigest)) {
         replyStatus(res, 401)
+        return
+      }
+
+      // ORIGIN GATE (server-side, default-on): mirror the ACP face's hard reject.
+      // A cross-origin *simple* POST (text/plain JSON-RPC body) is not preflighted,
+      // so withholding the ACAO header alone does NOT stop the request from
+      // executing — CORS only blocks the page from reading the response, not from
+      // sending it. In the default no-bearer local mode that is a CSRF hole, so a
+      // PRESENT, disallowed Origin is rejected 403 before any routing. An ABSENT
+      // Origin is allowed (non-browser clients legitimately send none); when
+      // --allow-any-origin is set isOriginAllowed returns true and this is a no-op.
+      const origin = req.headers.origin
+      if (typeof origin === 'string' && !isOriginAllowed(origin)) {
+        replyStatus(res, 403)
         return
       }
 
@@ -280,11 +311,11 @@ const startMcpFace = ({
           replyStatus(res, 400)
           return
         }
-        transport.handleRequest(req, res, parsed)
+        dispatch(res, () => transport.handleRequest(req, res, parsed))
         return
       }
 
-      transport.handleRequest(req, res)
+      dispatch(res, () => transport.handleRequest(req, res))
     })
 
     server.on('error', (err) => {
@@ -318,5 +349,4 @@ module.exports = {
   bearerMatches,
   DEFAULT_BODY_CAP_BYTES,
   MCP_PATH,
-  BODY_ABORTED,
 }
