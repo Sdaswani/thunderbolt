@@ -1,3 +1,6 @@
+# Playwright MCP scratch (accessibility-tree snapshots can capture typed secrets)
+.playwright-mcp/
+
 # Logs
 logs
 *.log
