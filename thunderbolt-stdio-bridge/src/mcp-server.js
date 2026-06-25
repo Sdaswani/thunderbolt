@@ -247,7 +247,9 @@ const startMcpFace = ({
         res.setHeader('Vary', 'Origin')
       }
       res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS')
-      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Mcp-Session-Id, Accept')
+      // MCP Streamable HTTP clients send `Mcp-Protocol-Version` on every request
+      // after initialize; it must be allow-listed or the browser's preflight fails.
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, Mcp-Session-Id, Mcp-Protocol-Version, Accept')
       res.setHeader('Access-Control-Expose-Headers', 'Mcp-Session-Id')
     }
 

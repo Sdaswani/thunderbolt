@@ -226,6 +226,9 @@ test('CORS preflight (OPTIONS) returns 204 and allow-origin per allowlist', asyn
   await fireRequest(server, req, res)
   expect(res.statusCode).toBe(204)
   expect(res.headers['Access-Control-Allow-Origin']).toBe('http://localhost:5173')
+  // The MCP Streamable HTTP client sends Mcp-Protocol-Version on every request
+  // after initialize; it MUST be allow-listed or the browser preflight fails.
+  expect(res.headers['Access-Control-Allow-Headers']).toContain('Mcp-Protocol-Version')
 })
 
 test('--allow-any-origin echoes * for any Origin', async () => {
