@@ -97,32 +97,19 @@ pub fn capabilities() -> Capabilities {
 // === Zeus bridge installer ===================================================================
 
 /// The canonical one-liner that installs the `zeus` bridge onto the user's PATH —
-/// identical to what the connect dialog shows for manual install.
+/// identical to what the connect dialog shows for manual install. Keep in sync with
+/// `installCommand` in `src/lib/agent-bridge-command.ts`.
 const ZEUS_INSTALL_CMD: &str =
     "curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash";
 
-/// Runs the `zeus` bridge installer from the desktop connect dialog so the user
-/// can install the bridge without opening a terminal. Spawns the canonical
-/// `curl … | bash` one-liner through a login shell (so `node`/`npm`/`curl` and the
-/// install target dir are on PATH), off the async runtime so the UI stays
-/// responsive. Returns the installer's stdout on success, or its error output on
-/// a non-zero exit. Desktop only — the renderer gates the call behind `isDesktop()`.
-#[cfg(desktop)]
-#[command]
-pub async fn install_bridge() -> Result<String, String> {
-    let output = tauri::async_runtime::spawn_blocking(|| {
-        std::process::Command::new("bash")
-            .args(["-lc", ZEUS_INSTALL_CMD])
-            .output()
-    })
-    .await
-    .map_err(|e| format!("installer task failed: {e}"))?
-    .map_err(|e| format!("failed to spawn installer: {e}"))?;
-
+/// Maps a finished installer process to the renderer-facing result: trimmed stdout
+/// on a clean exit, otherwise a message built from stderr (falling back to stdout)
+/// and the exit code. Pulled out of the command so it's unit-testable without
+/// actually spawning a shell.
+fn map_install_output(output: std::process::Output) -> Result<String, String> {
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
     }
-
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
     let detail = if stderr.trim().is_empty() {
@@ -137,11 +124,75 @@ pub async fn install_bridge() -> Result<String, String> {
     ))
 }
 
-/// Mobile builds have no shell/terminal, so the installer is desktop-only.
-#[cfg(not(desktop))]
+/// Runs the `zeus` bridge installer from the desktop connect dialog so the user can
+/// install without a terminal. install.sh needs `node`/`npm`/`curl`, so we run it
+/// through the user's login shell (`$SHELL -lc`, falling back to `bash`) to pick up
+/// their PATH (nvm/brew node), off the async runtime so the UI stays responsive.
+/// Best-effort: when the GUI environment lacks node/npm it fails and the dialog
+/// surfaces the manual command. macOS/Linux only — Windows and mobile have no POSIX
+/// login shell to drive the script.
+#[cfg(all(desktop, unix))]
 #[command]
 pub async fn install_bridge() -> Result<String, String> {
-    Err("The bridge installer is only available on desktop.".to_string())
+    let output = tauri::async_runtime::spawn_blocking(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        std::process::Command::new(shell)
+            .args(["-lc", ZEUS_INSTALL_CMD])
+            .output()
+    })
+    .await
+    .map_err(|e| format!("installer task failed: {e}"))?
+    .map_err(|e| format!("failed to spawn installer: {e}"))?;
+
+    map_install_output(output)
+}
+
+/// Windows desktop and mobile have no POSIX login shell to drive install.sh, so
+/// auto-install is unavailable there; the dialog shows the manual command instead.
+#[cfg(not(all(desktop, unix)))]
+#[command]
+pub async fn install_bridge() -> Result<String, String> {
+    Err(
+        "Automatic install is only available on macOS and Linux. Use the manual command."
+            .to_string(),
+    )
+}
+
+#[cfg(all(test, unix))]
+mod install_bridge_tests {
+    use super::map_install_output;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    // On Unix the raw wait-status encodes the exit code in the high byte.
+    fn output(code: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: ExitStatus::from_raw(code << 8),
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+        }
+    }
+
+    #[test]
+    fn success_returns_trimmed_stdout() {
+        assert_eq!(
+            map_install_output(output(0, "Installed.\n", "")).unwrap(),
+            "Installed."
+        );
+    }
+
+    #[test]
+    fn failure_prefers_stderr_and_code() {
+        let err = map_install_output(output(1, "", "npm not found")).unwrap_err();
+        assert!(err.contains("status 1"));
+        assert!(err.contains("npm not found"));
+    }
+
+    #[test]
+    fn failure_falls_back_to_stdout_when_stderr_empty() {
+        let err = map_install_output(output(2, "some detail", "")).unwrap_err();
+        assert!(err.contains("some detail"));
+    }
 }
 
 // === OAuth loopback server ===================================================================

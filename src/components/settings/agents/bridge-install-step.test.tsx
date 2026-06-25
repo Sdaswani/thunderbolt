@@ -11,14 +11,14 @@ afterEach(cleanup)
 
 describe('BridgeInstallStep', () => {
   it('on web shows only the manual install command (no auto button)', () => {
-    render(<BridgeInstallStep desktop={false} />)
+    render(<BridgeInstallStep autoInstallable={false} />)
 
     expect(screen.getByText(/curl -fsSL/)).toBeInTheDocument()
     expect(screen.queryByTestId('bridge-install-auto')).not.toBeInTheDocument()
   })
 
   it('on desktop shows the auto-install button plus a manual fallback', () => {
-    render(<BridgeInstallStep desktop={true} installFn={() => Promise.resolve('ok')} />)
+    render(<BridgeInstallStep autoInstallable={true} installFn={() => Promise.resolve('ok')} />)
 
     expect(screen.getByTestId('bridge-install-auto')).toHaveTextContent(/install automatically/i)
     // The manual command is still available (in the collapsible fallback).
@@ -27,7 +27,7 @@ describe('BridgeInstallStep', () => {
 
   it('runs the installer and shows "Installed" on success', async () => {
     const installFn = mock(() => Promise.resolve('installed to /usr/local/bin/zeus'))
-    render(<BridgeInstallStep desktop={true} installFn={installFn} />)
+    render(<BridgeInstallStep autoInstallable={true} installFn={installFn} />)
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('bridge-install-auto'))
@@ -40,7 +40,7 @@ describe('BridgeInstallStep', () => {
 
   it('surfaces the installer error and keeps the manual fallback', async () => {
     const installFn = mock(() => Promise.reject(new Error('installer exited with status 1: npm bin not writable')))
-    render(<BridgeInstallStep desktop={true} installFn={installFn} />)
+    render(<BridgeInstallStep autoInstallable={true} installFn={installFn} />)
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('bridge-install-auto'))
