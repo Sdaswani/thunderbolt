@@ -2,23 +2,127 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
--- Workspaces v1 data layer: bind every per-user data row to the row owner's
--- Personal Workspace (created by 0020), then enforce workspace_id NOT NULL.
+-- Workspaces v1: foundation + data layer + models.api_key. Consolidated into a
+-- single migration so the BE schema lands atomically — splitting it lets a
+-- partial apply leave the DB with workspace_id NOT NULL columns but no
+-- workspaces rows to FK to, or with workspaces tables but no backfilled data.
 --
--- Backfill instead of truncate so existing rows survive the cutover. Sync-rule
--- updates invalidate every connected client's checkpoint on first PowerSync
--- restart with the new schema — if BE returned empty buckets at that point,
--- every client (migrated or stale) would reconcile to "your bucket is empty"
--- and wipe its local copies. Backfilling keeps BE-side data continuous so
--- both shapes of clients see no interruption.
+-- Phase 1 — Workspace identity:
+--   create the workspace identity tables and materialize one Personal Workspace
+--   + admin membership per existing user. Must run before phase 2 so the
+--   workspaces row exists when phase 2's UPDATE backfills workspace_id from
+--   user_id (computed via uuid_generate_v5).
 --
--- ORDER IS LOAD-BEARING: the backfill UPDATEs run BEFORE we drop the old
--- (id, user_id) composite PKs. The powersync.* tables are published for
--- logical replication and Postgres refuses UPDATEs on a published table that
--- has no REPLICA IDENTITY — dropping the PK first leaves the table with no
--- identity → `cannot update table … because it does not have a replica
--- identity and publishes updates`. So: add the column, populate it, THEN
--- swap PKs and FKs.
+-- Phase 2 — Per-user data tables get workspace_id:
+--   Backfill instead of truncate so existing rows survive the cutover. Sync-rule
+--   updates invalidate every connected client's checkpoint on first PowerSync
+--   restart with the new schema — if BE returned empty buckets at that point,
+--   every client (migrated or stale) would reconcile to "your bucket is empty"
+--   and wipe its local copies. Backfilling keeps BE-side data continuous so
+--   both shapes of clients see no interruption.
+--
+--   ORDER IS LOAD-BEARING: the backfill UPDATEs run BEFORE we drop the old
+--   (id, user_id) composite PKs. The powersync.* tables are published for
+--   logical replication and Postgres refuses UPDATEs on a published table that
+--   has no REPLICA IDENTITY — dropping the PK first leaves the table with no
+--   identity → `cannot update table … because it does not have a replica
+--   identity and publishes updates`. So: add the column, populate it, THEN
+--   swap PKs and FKs.
+--
+-- Phase 3 — models.api_key:
+--   reintroduces the column dropped in THU-505; carried inside this migration
+--   so the workspaces cutover ships the full v1 schema in one transaction.
+--
+-- Personal workspace ids are derived deterministically from user.id via
+-- uuid_generate_v5 over the namespace defined in shared/workspaces.ts:
+--   computePersonalWorkspaceId(userId) =
+--     uuid_generate_v5(NAMESPACE, 'personal:' || userId)
+--   computePersonalAdminMembershipId(userId) =
+--     uuid_generate_v5(NAMESPACE, 'personal-admin:' || userId)
+-- The same constants are reused by the FE bootstrap and the BE upload
+-- handler — multi-device upserts collapse to the same row id.
+
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";--> statement-breakpoint
+
+CREATE TABLE "powersync"."workspaces" (
+	"id" text PRIMARY KEY NOT NULL,
+	"name" text NOT NULL,
+	"slug" text,
+	"icon" text,
+	"is_personal" boolean DEFAULT false NOT NULL,
+	"owner_user_id" text,
+	"created_at" timestamp DEFAULT now() NOT NULL,
+	"updated_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "powersync"."workspace_memberships" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"role" text NOT NULL,
+	"user_name" text,
+	"user_email" text,
+	"created_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "powersync"."workspace_pending_memberships" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"email" text NOT NULL,
+	"role" text NOT NULL,
+	"invited_by_user_id" text NOT NULL,
+	"created_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "powersync"."workspace_permissions" (
+	"id" text PRIMARY KEY NOT NULL,
+	"workspace_id" text NOT NULL,
+	"permission_key" text NOT NULL,
+	"required_role" text NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "powersync"."workspaces" ADD CONSTRAINT "workspaces_owner_user_id_user_id_fk" FOREIGN KEY ("owner_user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "powersync"."workspace_memberships" ADD CONSTRAINT "workspace_memberships_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "powersync"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "powersync"."workspace_memberships" ADD CONSTRAINT "workspace_memberships_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "powersync"."workspace_pending_memberships" ADD CONSTRAINT "workspace_pending_memberships_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "powersync"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "powersync"."workspace_pending_memberships" ADD CONSTRAINT "workspace_pending_memberships_invited_by_user_id_user_id_fk" FOREIGN KEY ("invited_by_user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "powersync"."workspace_permissions" ADD CONSTRAINT "workspace_permissions_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "powersync"."workspaces"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "idx_workspaces_personal_per_owner" ON "powersync"."workspaces" USING btree ("owner_user_id") WHERE "powersync"."workspaces"."is_personal" = true;--> statement-breakpoint
+CREATE INDEX "idx_workspaces_owner_user_id" ON "powersync"."workspaces" USING btree ("owner_user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "idx_workspaces_slug" ON "powersync"."workspaces" USING btree ("slug") WHERE "powersync"."workspaces"."slug" IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "idx_workspace_memberships_workspace_user" ON "powersync"."workspace_memberships" USING btree ("workspace_id","user_id");--> statement-breakpoint
+CREATE INDEX "idx_workspace_memberships_user" ON "powersync"."workspace_memberships" USING btree ("user_id");--> statement-breakpoint
+CREATE INDEX "idx_workspace_memberships_workspace" ON "powersync"."workspace_memberships" USING btree ("workspace_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "idx_workspace_pending_memberships_workspace_email" ON "powersync"."workspace_pending_memberships" USING btree ("workspace_id","email");--> statement-breakpoint
+CREATE INDEX "idx_workspace_pending_memberships_email" ON "powersync"."workspace_pending_memberships" USING btree ("email");--> statement-breakpoint
+CREATE INDEX "idx_workspace_pending_memberships_workspace" ON "powersync"."workspace_pending_memberships" USING btree ("workspace_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "idx_workspace_permissions_workspace_key" ON "powersync"."workspace_permissions" USING btree ("workspace_id","permission_key");--> statement-breakpoint
+CREATE INDEX "idx_workspace_permissions_workspace" ON "powersync"."workspace_permissions" USING btree ("workspace_id");--> statement-breakpoint
+-- Backfill: one Personal Workspace per existing user.
+INSERT INTO "powersync"."workspaces" ("id", "name", "is_personal", "owner_user_id", "created_at", "updated_at")
+SELECT
+  uuid_generate_v5('e2c4f9e0-b3a1-4a5c-9e8f-1d3a5c7e9f1b'::uuid, 'personal:' || u.id)::text,
+  'Default',
+  true,
+  u.id,
+  now(),
+  now()
+FROM "public"."user" u;
+--> statement-breakpoint
+-- Backfill: admin membership tying each user to their Personal Workspace.
+-- user_name / user_email are denormalized from `auth.user` so the Members page
+-- can render display info without a synced `users` projection.
+INSERT INTO "powersync"."workspace_memberships" ("id", "workspace_id", "user_id", "role", "user_name", "user_email", "created_at")
+SELECT
+  uuid_generate_v5('e2c4f9e0-b3a1-4a5c-9e8f-1d3a5c7e9f1b'::uuid, 'personal-admin:' || u.id)::text,
+  uuid_generate_v5('e2c4f9e0-b3a1-4a5c-9e8f-1d3a5c7e9f1b'::uuid, 'personal:' || u.id)::text,
+  u.id,
+  'admin',
+  u.name,
+  u.email,
+  now()
+FROM "public"."user" u;
+--> statement-breakpoint
 
 -- ADD workspace_id columns as NULLABLE first so the UPDATE backfill can run
 -- against existing rows. SET NOT NULL flips after the backfill below.
@@ -146,4 +250,8 @@ CREATE INDEX "idx_modes_workspace_id"          ON "powersync"."modes"          U
 CREATE INDEX "idx_prompts_workspace_id"        ON "powersync"."prompts"        USING btree ("workspace_id");--> statement-breakpoint
 CREATE INDEX "idx_skills_workspace_id"         ON "powersync"."skills"         USING btree ("workspace_id");--> statement-breakpoint
 CREATE INDEX "idx_tasks_workspace_id"          ON "powersync"."tasks"          USING btree ("workspace_id");--> statement-breakpoint
-CREATE INDEX "idx_triggers_workspace_id"       ON "powersync"."triggers"       USING btree ("workspace_id");
+CREATE INDEX "idx_triggers_workspace_id"       ON "powersync"."triggers"       USING btree ("workspace_id");--> statement-breakpoint
+
+-- THU-579: reintroduce models.api_key (dropped in THU-505). Carried inside
+-- the workspaces cutover so v1 lands as a single schema swap.
+ALTER TABLE "powersync"."models" ADD COLUMN "api_key" text;

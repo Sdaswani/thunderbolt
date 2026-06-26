@@ -150,24 +150,10 @@
       "breakpoints": true
     },
     {
-      "idx": 20,
-      "version": "7",
-      "when": 1782132240982,
-      "tag": "0020_workspaces_foundation",
-      "breakpoints": true
-    },
-    {
       "idx": 21,
       "version": "7",
-      "when": 1782132357436,
-      "tag": "0021_workspaces_data_layer",
-      "breakpoints": true
-    },
-    {
-      "idx": 22,
-      "version": "7",
       "when": 1782408136496,
-      "tag": "0022_models_api_key",
+      "tag": "0021_brave_quasar",
       "breakpoints": true
     }
   ]
