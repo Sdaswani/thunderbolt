@@ -26,12 +26,15 @@ import type { RegistryEntry } from '@/types/registry'
  *  subcommand of this binary (`zeus bridge …`). */
 const bridgeBin = 'zeus'
 
-/** Canonical one-line installer (curl | bash) — matches `zeus/install.sh`'s
- *  documented invocation. The binary drops onto the user's PATH. Keep in sync with
- *  `ZEUS_INSTALL_CMD` in `src-tauri/src/commands.rs`, which the desktop
- *  auto-installer runs as the exact same string. */
+/** Canonical one-line installer, wrapped in `bash -c 'set -o pipefail; …'` so a
+ *  failed `curl` (404 / network) fails the whole pipeline instead of leaving the
+ *  exit status at 0 — without pipefail a broken download looks like a successful
+ *  install. The `bash -c` wrapper also makes the pasted command shell-agnostic
+ *  (bash/zsh/fish all just exec it). This is the exact effective auto-install
+ *  command the desktop runs via `ZEUS_INSTALL_CMD` in `src-tauri/src/commands.rs`
+ *  (which wraps the same script in `bash -c 'set -o pipefail; …'`); keep in sync. */
 const installCommand =
-  'curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash'
+  "bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash'"
 
 /**
  * The shell fragment that launches the agent's own CLI, e.g.

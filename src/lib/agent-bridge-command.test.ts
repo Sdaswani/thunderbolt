@@ -123,10 +123,11 @@ describe('composeMcpBridgeCommand', () => {
 })
 
 describe('composeInstallCommand', () => {
-  it('returns the curl | bash one-liner for the bridge installer', () => {
-    const command = composeInstallCommand()
-    expect(command).toContain('curl -fsSL')
-    expect(command).toContain('zeus/install.sh')
-    expect(command.endsWith('| bash')).toBe(true)
+  it('wraps the curl | bash installer in bash -c set -o pipefail so a failed curl fails the pipeline', () => {
+    // Pin the exact string: a chopped closing quote would break the pasted command, and the
+    // bash -c 'set -o pipefail; …' wrapper is the contract that propagates a failed curl.
+    expect(composeInstallCommand()).toBe(
+      "bash -c 'set -o pipefail; curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash'",
+    )
   })
 })
