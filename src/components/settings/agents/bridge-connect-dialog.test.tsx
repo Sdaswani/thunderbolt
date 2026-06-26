@@ -68,7 +68,7 @@ describe('BridgeConnectDialog — npx agent', () => {
     })
 
     expect(writeTextMock).toHaveBeenCalledTimes(1)
-    expect(writeTextMock.mock.calls[0][0].startsWith('curl -fsSL')).toBe(true)
+    expect(writeTextMock.mock.calls[0][0].startsWith("bash -c 'set -o pipefail; curl -fsSL")).toBe(true)
   })
 
   it('invokes onOpenChange(false) when Done is clicked', () => {
