@@ -2,39 +2,65 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-'use strict'
+import { test, expect, mock } from 'bun:test'
+import { run } from './cli'
+import type {
+  BridgeOptions,
+  GenerateBearer,
+  LoggerOptions,
+  MakeLogger,
+  McpFaceOptions,
+  StartBridge,
+  StartMcpFace,
+  StartTunnel,
+  TunnelOptions,
+} from '../src/types'
 
-const { test, expect, mock } = require('bun:test')
-const { run } = require('./cli')
+/** A captured process-event listener (mirrors the CLI's injectable `on`). */
+type SignalListener = (...args: unknown[]) => unknown
+
+/** The injectable collaborators `run` forwards to the bridge subcommand. */
+type HarnessDeps = {
+  startBridge?: StartBridge
+  startMcpFace?: StartMcpFace
+  startTunnel?: StartTunnel
+  generateBearer?: GenerateBearer
+  makeLogger?: MakeLogger
+  on?: (event: string, listener: SignalListener) => void
+  removeListener?: (event: string, listener: SignalListener) => void
+}
+
+/** A fake stdout/stderr stream the test can read back (`text()`). */
+type Sink = NodeJS.WritableStream & { text: () => string }
 
 /** Collects writes to a fake stream. */
-const makeSink = () => {
-  const chunks = []
-  return { write: (s) => chunks.push(s), text: () => chunks.join('') }
+const makeSink = (): Sink => {
+  const chunks: string[] = []
+  return { write: (s: string) => chunks.push(s), text: () => chunks.join('') } as unknown as Sink
 }
 
 /** Build a default deps bundle with spies the test can inspect/override. */
-const makeHarness = (over = {}) => {
-  const signals = {}
+const makeHarness = (over: { deps?: HarnessDeps } = {}) => {
+  const signals: Record<string, SignalListener> = {}
   const face = { url: 'ws://127.0.0.1:5000', close: mock(async () => {}), kill: mock(() => {}) }
   const mcpFace = { url: 'http://127.0.0.1:54321/mcp', close: mock(async () => {}), kill: mock(() => {}) }
   const tunnel = { publicUrl: 'https://x.trycloudflare.com', bearer: 'secret', close: mock(async () => {}) }
-  const startBridge = mock(async () => face)
-  const startMcpFace = mock(async () => mcpFace)
-  const startTunnel = mock(async () => tunnel)
+  const startBridge = mock(async (_opts: BridgeOptions) => face)
+  const startMcpFace = mock(async (_opts: McpFaceOptions) => mcpFace)
+  const startTunnel = mock(async (_opts: TunnelOptions) => tunnel)
   const generateBearer = mock(() => 'minted-bearer')
   const logger = { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}), banner: mock(() => {}) }
-  const makeLogger = mock(() => logger)
+  const makeLogger = mock((_opts: LoggerOptions) => logger)
   const exit = mock(() => {})
   const stdout = makeSink()
   const stderr = makeSink()
-  const deps = {
+  const deps: HarnessDeps = {
     startBridge,
     startMcpFace,
     startTunnel,
     generateBearer,
     makeLogger,
-    on: (sig, fn) => {
+    on: (sig: string, fn: SignalListener) => {
       signals[sig] = fn
     },
     removeListener: () => {},
@@ -125,12 +151,12 @@ test('bridge --mode acp -- <cmd> dispatches to startBridge with parsed launch + 
 
 test('--mode mcp --tunnel: face binds BEFORE the tunnel, which targets the face url with the same minted bearer', async () => {
   const h = makeHarness()
-  const order = []
-  const startMcpFace = mock(async () => {
+  const order: string[] = []
+  const startMcpFace = mock(async (_opts: McpFaceOptions) => {
     order.push('face')
     return h.mcpFace
   })
-  const startTunnel = mock(async () => {
+  const startTunnel = mock(async (_opts: TunnelOptions) => {
     order.push('tunnel')
     return h.tunnel
   })
@@ -157,14 +183,26 @@ test('--mode mcp --tunnel: face binds BEFORE the tunnel, which targets the face 
 
 test('--mode mcp without --tunnel does not start a tunnel and bearer is undefined', async () => {
   const h = makeHarness()
-  await run({ argv: ['bridge', '--mode', 'mcp', '--', 'srv'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--mode', 'mcp', '--', 'srv'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   expect(h.startTunnel).not.toHaveBeenCalled()
   expect(h.startMcpFace.mock.calls[0][0].bearer).toBeUndefined()
 })
 
 test('SIGINT handler SIGKILLs (via face close) the live child then exits 130', async () => {
   const h = makeHarness()
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   await h.signals.SIGINT()
   expect(h.face.close).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(130)
@@ -172,7 +210,13 @@ test('SIGINT handler SIGKILLs (via face close) the live child then exits 130', a
 
 test('SIGTERM handler closes the face then exits 0', async () => {
   const h = makeHarness()
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   await h.signals.SIGTERM()
   expect(h.face.close).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(0)
@@ -184,7 +228,13 @@ test('a bind failure from the face (UnavailableError EADDRINUSE) maps to exit 69
     throw err
   })
   const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   expect(h.exit).toHaveBeenLastCalledWith(69)
 })
 
@@ -193,7 +243,13 @@ test('an unexpected internal throw maps to exit 70', async () => {
     throw new Error('boom')
   })
   const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   expect(h.exit).toHaveBeenLastCalledWith(70)
 })
 
@@ -216,7 +272,7 @@ test('logger is constructed with json/verbose flags and the injected stderr sink
 test('insecureFlagWarnings are emitted to stderr (via logger.warn) before the face starts', async () => {
   const h = makeHarness()
   let warnedBeforeStart = false
-  const startBridge = mock(async () => {
+  const startBridge = mock(async (_opts: BridgeOptions) => {
     warnedBeforeStart = h.logger.warn.mock.calls.length > 0
     return h.face
   })
@@ -232,32 +288,52 @@ test('insecureFlagWarnings are emitted to stderr (via logger.warn) before the fa
 })
 
 test('on clean child exit the bridge exits with the child-derived code (0)', async () => {
-  let captured
-  const startBridge = mock(async (args) => {
+  const h = makeHarness()
+  let captured: BridgeOptions | undefined
+  const startBridge = mock(async (args: BridgeOptions) => {
     captured = args
     return h.face
   })
-  const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
-  await captured.onChildExit({ code: 0, signal: null })
+  h.deps.startBridge = startBridge
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
+  await captured!.onChildExit!({ code: 0, signal: null })
   expect(h.exit).toHaveBeenLastCalledWith(0)
 })
 
 test('a nonzero child exit derives exit 70', async () => {
-  let captured
-  const startBridge = mock(async (args) => {
+  const h = makeHarness()
+  let captured: BridgeOptions | undefined
+  const startBridge = mock(async (args: BridgeOptions) => {
     captured = args
     return h.face
   })
-  const h = makeHarness({ deps: { startBridge } })
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
-  await captured.onChildExit({ code: 1, signal: null })
+  h.deps.startBridge = startBridge
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
+  await captured!.onChildExit!({ code: 1, signal: null })
   expect(h.exit).toHaveBeenLastCalledWith(70)
 })
 
 test('uncaughtException SIGKILLs the live child (face.kill) and exits 70 (never-orphan)', async () => {
   const h = makeHarness()
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   h.signals.uncaughtException(Object.assign(new Error('boom'), { code: 'ERR_FOO' }))
   expect(h.face.kill).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(70)
@@ -265,7 +341,13 @@ test('uncaughtException SIGKILLs the live child (face.kill) and exits 70 (never-
 
 test('unhandledRejection SIGKILLs the live child (face.kill) and exits 70 (never-orphan)', async () => {
   const h = makeHarness()
-  await run({ argv: ['bridge', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   h.signals.unhandledRejection(new Error('rejected'))
   expect(h.face.kill).toHaveBeenCalledTimes(1)
   expect(h.exit).toHaveBeenLastCalledWith(70)
@@ -273,7 +355,13 @@ test('unhandledRejection SIGKILLs the live child (face.kill) and exits 70 (never
 
 test('bridge --tunnel without --mode mcp is a usage error (exit 64)', async () => {
   const h = makeHarness()
-  await run({ argv: ['bridge', '--tunnel', '--mode', 'acp', '--', 'x'], stdout: h.stdout, stderr: h.stderr, exit: h.exit, deps: h.deps })
+  await run({
+    argv: ['bridge', '--tunnel', '--mode', 'acp', '--', 'x'],
+    stdout: h.stdout,
+    stderr: h.stderr,
+    exit: h.exit,
+    deps: h.deps,
+  })
   expect(h.exit).toHaveBeenCalledWith(64)
   expect(h.startBridge).not.toHaveBeenCalled()
 })

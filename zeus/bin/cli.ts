@@ -10,18 +10,62 @@
 // is injectable via a single `deps` object so the whole root is testable with no
 // real sockets.
 
-'use strict'
+import { parseArgs } from '../src/args'
+import { EX, toExitCode, toMessage, childExitToCode, UnavailableError } from '../src/errors'
+import { makeLogger } from '../src/log'
+import { insecureFlagWarnings } from '../src/util'
+import { startBridge } from '../src/server'
+import { startMcpFace } from '../src/mcp-server'
+import { startTunnel, generateBearer } from '../src/tunnel'
+import type {
+  ChildExit,
+  FaceHandle,
+  GenerateBearer,
+  MakeLogger,
+  ParseArgsResult,
+  ParsedArgs,
+  StartBridge,
+  StartMcpFace,
+  StartTunnel,
+  TunnelHandle,
+} from '../src/types'
 
-const { parseArgs } = require('../src/args')
-const { EX, toExitCode, toMessage, childExitToCode, UnavailableError } = require('../src/errors')
-const { makeLogger } = require('../src/log')
-const { insecureFlagWarnings } = require('../src/util')
-const { startBridge } = require('../src/server')
-const { startMcpFace } = require('../src/mcp-server')
-const { startTunnel, generateBearer } = require('../src/tunnel')
+// esbuild injects this global via `define` at build time; declare it so tsc sees
+// it. Undefined when the bin runs un-bundled straight from source.
+declare const __BRIDGE_VERSION__: string | undefined
 
 // esbuild inlines this; a fallback keeps the un-bundled bin runnable from source.
 const BRIDGE_VERSION = typeof __BRIDGE_VERSION__ !== 'undefined' ? __BRIDGE_VERSION__ : '0.0.0-dev'
+
+/** A process-event listener captured for one-shot, never-orphan teardown wiring. */
+type SignalListener = (...args: unknown[]) => unknown
+
+/** Injectable collaborators forwarded from `run` to the resolved subcommand. */
+type RunDeps = {
+  startBridge?: StartBridge
+  startMcpFace?: StartMcpFace
+  startTunnel?: StartTunnel
+  generateBearer?: GenerateBearer
+  makeLogger?: MakeLogger
+  on?: (event: string, listener: SignalListener) => void
+  removeListener?: (event: string, listener: SignalListener) => void
+}
+
+/** Options for `run`. Every sink/collaborator is injectable so tests use no real sockets. */
+type RunOptions = {
+  argv?: string[]
+  stdout?: NodeJS.WritableStream
+  stderr?: NodeJS.WritableStream
+  exit?: (code: number) => void
+  deps?: RunDeps
+}
+
+/** The io bundle `runBridge` writes diagnostics + exits through. */
+type RunBridgeIo = {
+  stderr: NodeJS.WritableStream
+  exit: (code: number) => void
+  deps: RunDeps
+}
 
 const ROOT_HELP_TEXT = `zeus — Thunderbolt's local stdio bridge toolkit.
 
@@ -56,29 +100,40 @@ Options:
   -V, --version        print the version and exit`
 
 /** Usage text keyed by the parser's `help` intent (`'root'` | the command name). */
-const HELP = { root: ROOT_HELP_TEXT, bridge: BRIDGE_HELP_TEXT }
+const HELP: Record<'root' | 'bridge', string> = { root: ROOT_HELP_TEXT, bridge: BRIDGE_HELP_TEXT }
+
+/**
+ * PII-safe error code for the uncaught-error backstop log. Mirrors the original
+ * `err && err.code` truthiness: a truthy `code` is emitted verbatim, otherwise
+ * the fixed `'INTERNAL'` token (never the message/stack of an arbitrary error).
+ */
+const fatalCode = (err: unknown): string | number | boolean => {
+  const code = (err as { code?: string | number | boolean } | null | undefined)?.code
+  return err && code ? code : 'INTERNAL'
+}
 
 /**
  * Run the `bridge` subcommand: build the logger, warn on insecure flags, wire the
  * never-orphan lifecycle (signal handlers + an uncaught-error backstop), and start
  * the ACP or MCP face. Returns once the outcome is decided; the process is kept
  * alive by the open server/sockets until a signal or child exit closes the face.
- *
- * @param {import('../src/args').ParsedArgs} parsed - resolved bridge options.
- * @param {Object} io
- * @param {NodeJS.WritableStream} io.stderr - all diagnostics + banner.
- * @param {(code: number) => void} io.exit
- * @param {Object} io.deps - injectable { startBridge, startMcpFace, startTunnel, generateBearer, makeLogger, on, removeListener }.
- * @returns {Promise<void>}
  */
-const runBridge = async (parsed, { stderr, exit, deps }) => {
+const runBridge = async (parsed: ParsedArgs, { stderr, exit, deps }: RunBridgeIo): Promise<void> => {
   const _startBridge = deps.startBridge ?? startBridge
   const _startMcpFace = deps.startMcpFace ?? startMcpFace
   const _startTunnel = deps.startTunnel ?? startTunnel
   const _generateBearer = deps.generateBearer ?? generateBearer
   const _makeLogger = deps.makeLogger ?? makeLogger
-  const onSignal = deps.on ?? process.on.bind(process)
-  const offSignal = deps.removeListener ?? process.removeListener.bind(process)
+  const onSignal =
+    deps.on ??
+    ((event: string, listener: SignalListener): void => {
+      process.on(event, listener)
+    })
+  const offSignal =
+    deps.removeListener ??
+    ((event: string, listener: SignalListener): void => {
+      process.removeListener(event, listener)
+    })
 
   const logger = _makeLogger({ json: parsed.json, verbose: parsed.verbose, sink: stderr })
 
@@ -92,16 +147,16 @@ const runBridge = async (parsed, { stderr, exit, deps }) => {
   }
 
   // Shared teardown state so every fatal path can SIGKILL a live child first.
-  const live = { face: null, tunnel: null }
+  const live: { face: FaceHandle | null; tunnel: TunnelHandle | null } = { face: null, tunnel: null }
 
-  const reap = async () => {
+  const reap = async (): Promise<void> => {
     // never-orphan: stop the face (which stops the child) and the tunnel.
     if (live.face) await live.face.close().catch(() => {})
     if (live.tunnel) await live.tunnel.close().catch(() => {})
   }
 
   // The child exiting on its own drives the bridge's own exit code.
-  const onChildExit = async (info) => {
+  const onChildExit = async (info: ChildExit): Promise<void> => {
     offSignal('SIGINT', sigintHandler)
     offSignal('SIGTERM', sigtermHandler)
     if (live.tunnel) await live.tunnel.close().catch(() => {})
@@ -109,7 +164,7 @@ const runBridge = async (parsed, { stderr, exit, deps }) => {
   }
 
   // One-shot signal handlers -> graceful stop -> derived exit code.
-  const handleSignal = (signal) => async () => {
+  const handleSignal = (signal: NodeJS.Signals) => async (): Promise<void> => {
     offSignal('SIGINT', sigintHandler)
     offSignal('SIGTERM', sigtermHandler)
     await reap()
@@ -122,12 +177,12 @@ const runBridge = async (parsed, { stderr, exit, deps }) => {
 
   // Never-orphan backstop for truly uncaught errors: SIGKILL the child
   // synchronously (no async grace — the process is about to die) then exit 70.
-  const onFatal = (err) => {
+  const onFatal = (err: unknown): void => {
     offSignal('SIGINT', sigintHandler)
     offSignal('SIGTERM', sigtermHandler)
     if (live.face) live.face.kill() // immediate SIGKILL — never-orphan backstop
     if (live.tunnel) live.tunnel.close().catch(() => {}) // best-effort
-    logger.error('uncaught', { code: err && err.code ? err.code : 'INTERNAL' })
+    logger.error('uncaught', { code: fatalCode(err) })
     exit(EX.SOFTWARE)
   }
   onSignal('uncaughtException', onFatal)
@@ -146,7 +201,7 @@ const runBridge = async (parsed, { stderr, exit, deps }) => {
       })
       live.face = face
       // ACP face resolves on child exit via its own close(); cli derives the code
-      // from the child exit propagated by server.js.
+      // from the child exit propagated by server.ts.
       return
     }
 
@@ -168,7 +223,8 @@ const runBridge = async (parsed, { stderr, exit, deps }) => {
 
     if (parsed.tunnel) {
       // If the tunnel fails here the catch path reaps live.face — never-orphan.
-      live.tunnel = await _startTunnel({ localUrl: face.url, bearer, logger })
+      // bearer is non-null here: it was minted above under the same `parsed.tunnel`.
+      live.tunnel = await _startTunnel({ localUrl: face.url, bearer: bearer!, logger })
     }
     return
   } catch (err) {
@@ -183,14 +239,6 @@ const runBridge = async (parsed, { stderr, exit, deps }) => {
  * CLI composition root. Parse argv, short-circuit error/help/version, then
  * dispatch to the resolved subcommand. All exits go through the injected `exit`
  * so tests assert the code without terminating.
- *
- * @param {Object} [opts]
- * @param {string[]} [opts.argv] - argv without node/script (process.argv.slice(2)).
- * @param {NodeJS.WritableStream} [opts.stdout] - help/version sink only.
- * @param {NodeJS.WritableStream} [opts.stderr] - all diagnostics + banner.
- * @param {(code: number) => void} [opts.exit]
- * @param {Object} [opts.deps] - injectable collaborators forwarded to the subcommand.
- * @returns {Promise<void>}
  */
 const run = async ({
   argv = process.argv.slice(2),
@@ -198,8 +246,8 @@ const run = async ({
   stderr = process.stderr,
   exit = process.exit,
   deps = {},
-} = {}) => {
-  const parsed = (() => {
+}: RunOptions = {}): Promise<void> => {
+  const parsed: ParseArgsResult | { error: unknown } = (() => {
     try {
       return parseArgs(argv)
     } catch (err) {
@@ -207,15 +255,15 @@ const run = async ({
     }
   })()
 
-  if (parsed.error) {
+  if ('error' in parsed) {
     stderr.write(`${toMessage(parsed.error)}\n`)
     return exit(toExitCode(parsed.error))
   }
-  if (parsed.help) {
+  if ('help' in parsed) {
     stdout.write(`${HELP[parsed.help]}\n`)
     return exit(EX.OK)
   }
-  if (parsed.version) {
+  if ('version' in parsed) {
     stdout.write(`${BRIDGE_VERSION}\n`)
     return exit(EX.OK)
   }
@@ -234,12 +282,14 @@ const run = async ({
   }
 }
 
-module.exports = { run }
+export { run }
 
 // Module side-effect entry: run when invoked as the program (not when required
 // by a test). Bundled or executed directly, this is the program entrypoint.
+// `require`/`module` are CJS globals esbuild preserves in the bundled CJS entry;
+// @types/node declares both as ambient globals so the source still type-checks.
 if (require.main === module) {
-  run().catch((err) => {
+  run().catch((err: unknown) => {
     process.stderr.write(`${toMessage(err)}\n`)
     process.exit(toExitCode(err))
   })

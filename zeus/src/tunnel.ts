@@ -9,11 +9,10 @@
 // embedded in the public URL or any query string — mcp-server.js compares it
 // constant-time on every request.
 
-'use strict'
-
-const { spawn: defaultSpawn } = require('node:child_process')
-const { randomBytes: defaultRandomBytes } = require('node:crypto')
-const { UnavailableError } = require('./errors')
+import { spawn as defaultSpawn } from 'node:child_process'
+import { randomBytes as defaultRandomBytes } from 'node:crypto'
+import { UnavailableError } from './errors'
+import type { GenerateBearer, StartTunnel } from './types'
 
 /** Entropy of the minted bearer: 32 bytes => 256 bits. */
 const BEARER_BYTES = 32
@@ -29,11 +28,9 @@ const TRYCLOUDFLARE_RE = /https:\/\/[a-z0-9-]+\.trycloudflare\.com/i
 /**
  * Mint a high-entropy bearer for fronting the MCP face. 32 bytes => 256 bits,
  * base64url-encoded so it's safe to carry verbatim in an Authorization header.
- *
- * @param {(n: number) => Buffer} [randomBytes] - injectable crypto.randomBytes.
- * @returns {string}
  */
-const generateBearer = (randomBytes = defaultRandomBytes) => randomBytes(BEARER_BYTES).toString('base64url')
+const generateBearer: GenerateBearer = (randomBytes = defaultRandomBytes) =>
+  randomBytes(BEARER_BYTES).toString('base64url')
 
 /**
  * Start a cloudflared quick tunnel in front of `localUrl`, fronted by the
@@ -41,21 +38,19 @@ const generateBearer = (randomBytes = defaultRandomBytes) => randomBytes(BEARER_
  * URL; rejects with an UnavailableError if cloudflared is missing (ENOENT) or
  * never prints a URL in time. The bearer is logged to stderr — never put in the
  * URL.
- *
- * @param {Object} opts
- * @param {string} opts.localUrl - the local MCP face URL to tunnel to.
- * @param {string} opts.bearer - the mandatory bearer fronting the face.
- * @param {Object} opts.logger - PII-safe logger.
- * @param {Function} [opts.spawn] - injectable child_process.spawn.
- * @param {number} [opts.urlTimeoutMs] - how long to wait for the public URL.
- * @returns {Promise<{ publicUrl: string, bearer: string, close(): Promise<void> }>}
  */
-const startTunnel = ({ localUrl, bearer, logger, spawn = defaultSpawn, urlTimeoutMs = URL_TIMEOUT_MS }) => {
+const startTunnel: StartTunnel = ({
+  localUrl,
+  bearer,
+  logger,
+  spawn = defaultSpawn,
+  urlTimeoutMs = URL_TIMEOUT_MS,
+}) => {
   return new Promise((resolve, reject) => {
     const settled = { done: false }
     const child = spawn('cloudflared', ['tunnel', '--url', localUrl])
 
-    let graceTimer = null
+    let graceTimer: NodeJS.Timeout | null = null
     const clearGrace = () => {
       if (graceTimer) {
         clearTimeout(graceTimer)
@@ -63,7 +58,7 @@ const startTunnel = ({ localUrl, bearer, logger, spawn = defaultSpawn, urlTimeou
       }
     }
 
-    const close = () =>
+    const close = (): Promise<void> =>
       new Promise((resolveClose) => {
         if (child.exitCode !== null || child.signalCode !== null) {
           clearGrace()
@@ -87,7 +82,7 @@ const startTunnel = ({ localUrl, bearer, logger, spawn = defaultSpawn, urlTimeou
     }, urlTimeoutMs)
     if (typeof urlTimer.unref === 'function') urlTimer.unref()
 
-    child.on('error', (err) => {
+    child.on('error', (err: NodeJS.ErrnoException) => {
       if (settled.done) return
       settled.done = true
       clearTimeout(urlTimer)
@@ -99,7 +94,7 @@ const startTunnel = ({ localUrl, bearer, logger, spawn = defaultSpawn, urlTimeou
     // Accumulate across chunks so a URL split over two `data` events still
     // matches; cap the buffer so a chatty cloudflared can't grow it unbounded.
     let stderrBuffer = ''
-    child.stderr.on('data', (chunk) => {
+    child.stderr!.on('data', (chunk: Buffer) => {
       if (settled.done) return
       stderrBuffer = (stderrBuffer + chunk.toString('utf8')).slice(-STDERR_BUFFER_CAP)
       const match = TRYCLOUDFLARE_RE.exec(stderrBuffer)
@@ -117,4 +112,4 @@ const startTunnel = ({ localUrl, bearer, logger, spawn = defaultSpawn, urlTimeou
   })
 }
 
-module.exports = { startTunnel, generateBearer, BEARER_BYTES, URL_TIMEOUT_MS }
+export { startTunnel, generateBearer, BEARER_BYTES, URL_TIMEOUT_MS }

@@ -16,69 +16,55 @@
 // requests) and reconcile their many initialize/id streams onto the single child
 // here.
 
-'use strict'
+import { classifyFrame } from './log'
+import { wsToFrame } from './relay'
+import type { JsonRpcId, JsonRpcMessage, McpTransport, Multiplexer, MultiplexerOptions } from './types'
 
-const { classifyFrame } = require('./log')
-const { wsToFrame } = require('./relay')
+/** A client id paired with the transport that owns it (pending route / init waiter). */
+type Route = { transport: McpTransport; clientId: JsonRpcId | null | undefined }
 
-/**
- * Build the multiplexer.
- *
- * @param {Object} opts
- * @param {(frame: string) => void} opts.writeChild - write one NDJSON frame to the
- *   child's stdin (the supervisor's writeStdin).
- * @param {{ warn: Function }} opts.logger - PII-safe logger.
- * @returns {{
- *   createTransport(TransportClass: Function): object,
- *   releaseTransport(transport: object): void,
- *   onChildMessage(message: object): void,
- *   closeAll(): void,
- * }}
- */
-const createMultiplexer = ({ writeChild, logger }) => {
+/** Build the multiplexer. */
+const createMultiplexer = ({ writeChild, logger }: MultiplexerOptions): Multiplexer => {
   /** Live per-request transports, for broadcast + teardown. */
-  const transports = new Set()
+  const transports = new Set<McpTransport>()
 
   /**
    * Outstanding child requests keyed by the process-global id we assigned. Maps
    * back to the owning transport and the client's original id so the child's
    * response routes home with the id the client expects.
-   * @type {Map<string, { transport: object, clientId: string|number }>}
    */
-  const pending = new Map()
+  const pending = new Map<JsonRpcId, Route>()
 
   /** Monotonic counter backing the process-global request ids. */
   let seq = 0
   /** Prefix-tagged global id; the `b:` namespace can never collide with a client id. */
-  const nextGlobalId = () => `b:${seq++}`
+  const nextGlobalId = (): string => `b:${seq++}`
 
   /**
    * The child's negotiated initialize result (capabilities/serverInfo/
    * protocolVersion), captured from the first initialize response. Null until the
    * child has answered. Every later client initialize is answered from this.
-   * @type {object|null}
    */
-  let childInitResult = null
+  let childInitResult: unknown = null
   /** True once the first initialize has been forwarded to the child. */
   let initForwarded = false
   /** True once `notifications/initialized` has been forwarded once. */
   let initializedNotified = false
   /** The global id under which the first initialize was forwarded to the child. */
-  let initGlobalId = null
+  let initGlobalId: string | null = null
   /**
    * Initialize requests that arrived before the child answered the first one.
    * Each is answered from the cached result the moment it lands — never forwarded.
-   * @type {Array<{ transport: object, clientId: string|number }>}
    */
-  const initWaiters = []
+  const initWaiters: Route[] = []
 
   /** Send one frame to a transport, swallowing a benign disconnected-client reject. */
-  const sendTo = (transport, message) => {
+  const sendTo = (transport: McpTransport, message: JsonRpcMessage): void => {
     Promise.resolve(transport.send(message)).catch(() => logger.warn('drop-child-frame', classifyFrame(message)))
   }
 
   /** Forward one client message to the child as NDJSON, dropping unserializable frames. */
-  const forwardToChild = (message) => {
+  const forwardToChild = (message: JsonRpcMessage): void => {
     try {
       writeChild(wsToFrame(JSON.stringify(message)))
     } catch {
@@ -91,7 +77,7 @@ const createMultiplexer = ({ writeChild, logger }) => {
    * client's request id (the negotiated protocolVersion/capabilities are reused
    * verbatim from the child's reply).
    */
-  const answerInitFromCache = (transport, clientId) => {
+  const answerInitFromCache = (transport: McpTransport, clientId: JsonRpcId | null | undefined): void => {
     sendTo(transport, { jsonrpc: '2.0', id: clientId, result: childInitResult })
   }
 
@@ -101,7 +87,7 @@ const createMultiplexer = ({ writeChild, logger }) => {
    * child answers are queued too (never forwarded); once cached, every initialize
    * is answered directly. The child therefore sees exactly one initialize, ever.
    */
-  const handleInitialize = (transport, message) => {
+  const handleInitialize = (transport: McpTransport, message: JsonRpcMessage): void => {
     if (childInitResult !== null) {
       answerInitFromCache(transport, message.id)
       return
@@ -119,10 +105,10 @@ const createMultiplexer = ({ writeChild, logger }) => {
    * behind it). An error is relayed to every waiter (re-stamped with their client
    * id) and the init state is RESET so the next client initialize re-forwards to
    * the child — otherwise a single child-side init failure would wedge every
-   * future connection.
-   * @returns {boolean} true if the message was the awaited initialize reply.
+   * future connection. Returns true when the message was the awaited initialize
+   * reply.
    */
-  const captureInitReply = (message) => {
+  const captureInitReply = (message: JsonRpcMessage): boolean => {
     if (childInitResult !== null || initGlobalId === null || message.id !== initGlobalId) return false
     if (message.result) {
       childInitResult = message.result
@@ -187,7 +173,7 @@ const createMultiplexer = ({ writeChild, logger }) => {
       if (captureInitReply(message)) return
       // A response to a forwarded request: route it home with the client's id.
       if (message.id !== undefined && message.id !== null && pending.has(message.id)) {
-        const { transport, clientId } = pending.get(message.id)
+        const { transport, clientId } = pending.get(message.id)!
         pending.delete(message.id)
         sendTo(transport, { ...message, id: clientId })
         return
@@ -212,4 +198,4 @@ const createMultiplexer = ({ writeChild, logger }) => {
   }
 }
 
-module.exports = { createMultiplexer }
+export { createMultiplexer }

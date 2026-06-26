@@ -10,12 +10,16 @@
 // (no network) and SKIPS the whole suite when the dependency is unavailable, so
 // CI stays green offline.
 
-const { test, describe, expect, beforeAll, afterAll } = require('bun:test')
-const path = require('node:path')
-const { Client } = require('@modelcontextprotocol/sdk/client/index.js')
-const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js')
-const { makeLogger } = require('./log')
-const { startMcpFace } = require('./mcp-server')
+import { test, describe, expect, beforeAll, afterAll } from 'bun:test'
+import * as path from 'node:path'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { makeLogger } from './log'
+import { startMcpFace } from './mcp-server'
+import type { FaceHandle } from './types'
+
+/** The subset of a server-everything package.json this resolver reads. */
+type ServerEverythingPkg = { bin?: string | Record<string, string>; main?: string }
 
 /**
  * Resolve a launch argv for server-everything from the locally-installed package
@@ -23,10 +27,10 @@ const { startMcpFace } = require('./mcp-server')
  * skips rather than failing offline.
  * @returns {string[]|null}
  */
-const resolveServerEverythingLaunch = () => {
+const resolveServerEverythingLaunch = (): string[] | null => {
   try {
     const pkgPath = require.resolve('@modelcontextprotocol/server-everything/package.json')
-    const pkg = require(pkgPath)
+    const pkg = require(pkgPath) as ServerEverythingPkg
     const dir = path.dirname(pkgPath)
     const binEntry =
       typeof pkg.bin === 'string' ? pkg.bin : (pkg.bin?.['mcp-server-everything'] ?? Object.values(pkg.bin ?? {})[0])
@@ -41,15 +45,13 @@ const launch = resolveServerEverythingLaunch()
 const unavailable = launch === null
 
 describe.skipIf(unavailable)('mcp-server integration (real server-everything)', () => {
-  /** @type {{ url: string, close(): Promise<void> }|null} */
-  let face = null
-  /** @type {Client|null} */
-  let client = null
+  let face: FaceHandle | null = null
+  let client: Client | null = null
 
   beforeAll(async () => {
     const logger = makeLogger({ json: false, verbose: false, sink: process.stderr })
     face = await startMcpFace({
-      launch,
+      launch: launch!,
       host: '127.0.0.1',
       port: 0,
       allowOrigins: [],
@@ -57,33 +59,33 @@ describe.skipIf(unavailable)('mcp-server integration (real server-everything)', 
       logger,
     })
     client = new Client({ name: 'integration-test', version: '0.0.0' })
-    const transport = new StreamableHTTPClientTransport(new URL(face.url))
-    await client.connect(transport)
+    const transport = new StreamableHTTPClientTransport(new URL(face!.url))
+    await client!.connect(transport)
   })
 
   afterAll(async () => {
     // Always teardown so no child/socket leaks even on assertion failure.
-    if (client) await client.close().catch(() => {})
+    if (client) await client!.close().catch(() => {})
     if (face) await face.close()
   })
 
   test('initialize handshake succeeds through the face', () => {
     expect(client).not.toBeNull()
-    expect(client.getServerVersion()).toBeTruthy()
+    expect(client!.getServerVersion()).toBeTruthy()
   })
 
   test('tools/list returns a non-empty tool set', async () => {
-    const { tools } = await client.listTools()
+    const { tools } = await client!.listTools()
     expect(Array.isArray(tools)).toBe(true)
     expect(tools.length).toBeGreaterThan(0)
   })
 
   test('calling the echo tool returns a well-formed result', async () => {
-    const { tools } = await client.listTools()
+    const { tools } = await client!.listTools()
     const echo = tools.find((t) => t.name === 'echo')
     expect(echo).toBeTruthy()
-    const result = await client.callTool({ name: 'echo', arguments: { message: 'hello bridge' } })
-    const text = (result.content ?? []).map((c) => c.text ?? '').join('')
+    const result = await client!.callTool({ name: 'echo', arguments: { message: 'hello bridge' } })
+    const text = ((result.content ?? []) as Array<{ text?: string }>).map((c) => c.text ?? '').join('')
     expect(text).toContain('hello bridge')
   })
 
@@ -95,9 +97,9 @@ describe.skipIf(unavailable)('mcp-server integration (real server-everything)', 
   // closes), all sharing the ONE child (initialized exactly once) — every one
   // must initialize, list the full tool set, and round-trip a tool call.
   test('TWO concurrent clients both initialize, list tools, and call echo (multiplexed onto one child)', async () => {
-    const open = async (name) => {
+    const open = async (name: string) => {
       const c = new Client({ name, version: '0.0.0' })
-      await c.connect(new StreamableHTTPClientTransport(new URL(face.url)))
+      await c.connect(new StreamableHTTPClientTransport(new URL(face!.url)))
       return c
     }
 
@@ -105,18 +107,20 @@ describe.skipIf(unavailable)('mcp-server integration (real server-everything)', 
     // second to the same URL — under the OLD code this initialize was rejected.
     const second = await open('integration-second')
     try {
-      expect(client.getServerVersion()).toBeTruthy()
+      expect(client!.getServerVersion()).toBeTruthy()
       expect(second.getServerVersion()).toBeTruthy()
 
-      const first = await client.listTools()
+      const first = await client!.listTools()
       const secondList = await second.listTools()
       expect(first.tools).toHaveLength(13)
       expect(secondList.tools).toHaveLength(13)
 
-      const e1 = await client.callTool({ name: 'echo', arguments: { message: 'from-first' } })
+      const e1 = await client!.callTool({ name: 'echo', arguments: { message: 'from-first' } })
       const e2 = await second.callTool({ name: 'echo', arguments: { message: 'from-second' } })
-      expect((e1.content ?? []).map((c) => c.text ?? '').join('')).toContain('from-first')
-      expect((e2.content ?? []).map((c) => c.text ?? '').join('')).toContain('from-second')
+      expect(((e1.content ?? []) as Array<{ text?: string }>).map((c) => c.text ?? '').join('')).toContain('from-first')
+      expect(((e2.content ?? []) as Array<{ text?: string }>).map((c) => c.text ?? '').join('')).toContain(
+        'from-second',
+      )
 
       // A THIRD client after the second closes: the child stays initialized once.
       await second.close()
@@ -125,7 +129,9 @@ describe.skipIf(unavailable)('mcp-server integration (real server-everything)', 
         const thirdList = await third.listTools()
         expect(thirdList.tools).toHaveLength(13)
         const e3 = await third.callTool({ name: 'echo', arguments: { message: 'from-third' } })
-        expect((e3.content ?? []).map((c) => c.text ?? '').join('')).toContain('from-third')
+        expect(((e3.content ?? []) as Array<{ text?: string }>).map((c) => c.text ?? '').join('')).toContain(
+          'from-third',
+        )
       } finally {
         await third.close().catch(() => {})
       }

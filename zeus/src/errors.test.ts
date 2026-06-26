@@ -2,10 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-'use strict'
-
-const { test, expect } = require('bun:test')
-const { EX, UsageError, UnavailableError, SigintError, toExitCode, toMessage, childExitToCode } = require('./errors')
+import { test, expect } from 'bun:test'
+import { EX, UsageError, UnavailableError, SigintError, toExitCode, toMessage, childExitToCode } from './errors'
 
 test('EX table values are exactly {0,64,69,70,130}', () => {
   expect(EX).toEqual({ OK: 0, USAGE: 64, UNAVAILABLE: 69, SOFTWARE: 70, SIGINT: 130 })

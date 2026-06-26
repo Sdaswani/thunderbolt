@@ -2,13 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-'use strict'
-
-const { test, expect } = require('bun:test')
-const { createNdjsonReader, frameToWs, wsToFrame, MalformedFrameError, parseFrame } = require('./relay')
+import { test, expect } from 'bun:test'
+import { createNdjsonReader, frameToWs, wsToFrame, MalformedFrameError, parseFrame } from './relay'
 
 const collect = () => {
-  const lines = []
+  const lines: string[] = []
   const reader = createNdjsonReader((line) => lines.push(line))
   return { lines, reader }
 }

@@ -2,10 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-'use strict'
-
-const { test, expect, mock } = require('bun:test')
-const { createMultiplexer } = require('./mcp-multiplexer')
+import { test, expect, mock, type Mock } from 'bun:test'
+import { createMultiplexer } from './mcp-multiplexer'
+import type { JsonRpcId, JsonRpcMessage, McpTransport, McpTransportClass, Multiplexer } from './types'
 
 /** A silent PII-safe logger spy. */
 const makeLogger = () => ({
@@ -15,10 +14,17 @@ const makeLogger = () => ({
   banner: mock(() => {}),
 })
 
+/** The test's view of a per-request transport once the mux has wired its onmessage. */
+type FakeTransport = {
+  onmessage: (message: JsonRpcMessage) => void
+  send: Mock<(message: JsonRpcMessage) => Promise<void>>
+  close: Mock<() => Promise<void>>
+}
+
 /** A fake per-request transport: captures sent frames; onmessage is wired by the mux. */
 const makeTransport = () => ({
-  onmessage: null,
-  send: mock(() => Promise.resolve()),
+  onmessage: null as ((message: JsonRpcMessage) => void) | null,
+  send: mock((_message: JsonRpcMessage) => Promise.resolve()),
   close: mock(() => Promise.resolve()),
 })
 
@@ -27,21 +33,24 @@ const TransportClass = class {
   constructor() {
     return makeTransport()
   }
-}
+} as unknown as McpTransportClass
+
+/** Create a per-request transport and view it as the FakeTransport the test drives. */
+const create = (mux: Multiplexer): FakeTransport => mux.createTransport(TransportClass) as unknown as FakeTransport
 
 /** Build a mux whose child writes are captured as parsed frames. */
 const makeMux = () => {
   const logger = makeLogger()
-  const written = []
+  const written: JsonRpcMessage[] = []
   const mux = createMultiplexer({
-    writeChild: (frame) => written.push(JSON.parse(frame.replace(/\n$/, ''))),
+    writeChild: (frame: string) => written.push(JSON.parse(frame.replace(/\n$/, ''))),
     logger,
   })
   return { mux, written, logger }
 }
 
 /** A standard client initialize request. */
-const initRequest = (id) => ({
+const initRequest = (id: JsonRpcId): JsonRpcMessage => ({
   jsonrpc: '2.0',
   id,
   method: 'initialize',
@@ -57,7 +66,7 @@ const childInitResult = {
 
 test('the FIRST client initialize is forwarded to the child exactly once (id remapped)', () => {
   const { mux, written } = makeMux()
-  const t = mux.createTransport(TransportClass)
+  const t = create(mux)
   t.onmessage(initRequest(1))
   expect(written).toHaveLength(1)
   expect(written[0].method).toBe('initialize')
@@ -67,7 +76,7 @@ test('the FIRST client initialize is forwarded to the child exactly once (id rem
 
 test('the child initialize result is cached and answered to the first client with its id', () => {
   const { mux, written } = makeMux()
-  const t = mux.createTransport(TransportClass)
+  const t = create(mux)
   t.onmessage(initRequest(1))
   const globalId = written[0].id
   mux.onChildMessage({ jsonrpc: '2.0', id: globalId, result: childInitResult })
@@ -77,13 +86,13 @@ test('the child initialize result is cached and answered to the first client wit
 
 test('a SECOND client initialize is NOT forwarded to the child and is answered from cache with its own id', () => {
   const { mux, written } = makeMux()
-  const t1 = mux.createTransport(TransportClass)
+  const t1 = create(mux)
   t1.onmessage(initRequest(1))
   const globalId = written[0].id
   mux.onChildMessage({ jsonrpc: '2.0', id: globalId, result: childInitResult })
 
   // Second client (a fresh transport) initializes: the child must NOT see it.
-  const t2 = mux.createTransport(TransportClass)
+  const t2 = create(mux)
   t2.onmessage(initRequest(99))
   expect(written).toHaveLength(1) // STILL just the first forwarded initialize
   expect(t2.send).toHaveBeenCalledTimes(1)
@@ -92,8 +101,8 @@ test('a SECOND client initialize is NOT forwarded to the child and is answered f
 
 test('a concurrent initialize that races in BEFORE the child answers is queued and answered from cache (not forwarded)', () => {
   const { mux, written } = makeMux()
-  const t1 = mux.createTransport(TransportClass)
-  const t2 = mux.createTransport(TransportClass)
+  const t1 = create(mux)
+  const t2 = create(mux)
   // Both initialize before the child has replied to the first.
   t1.onmessage(initRequest(10))
   t2.onmessage(initRequest(20))
@@ -114,8 +123,8 @@ test('a concurrent initialize that races in BEFORE the child answers is queued a
 
 test('the FIRST notifications/initialized is forwarded; duplicates are swallowed', () => {
   const { mux, written } = makeMux()
-  const t1 = mux.createTransport(TransportClass)
-  const t2 = mux.createTransport(TransportClass)
+  const t1 = create(mux)
+  const t2 = create(mux)
   t1.onmessage({ jsonrpc: '2.0', method: 'notifications/initialized' })
   t2.onmessage({ jsonrpc: '2.0', method: 'notifications/initialized' })
   // Only the first reaches the child (server-everything would otherwise be confused).
@@ -125,8 +134,8 @@ test('the FIRST notifications/initialized is forwarded; duplicates are swallowed
 
 test('a client request id is remapped to a global id and the response routes home to the right transport', () => {
   const { mux, written } = makeMux()
-  const t1 = mux.createTransport(TransportClass)
-  const t2 = mux.createTransport(TransportClass)
+  const t1 = create(mux)
+  const t2 = create(mux)
   // Both clients use the SAME local id (1) — the classic collision the remap fixes.
   t1.onmessage({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
   t2.onmessage({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
@@ -145,8 +154,8 @@ test('a client request id is remapped to a global id and the response routes hom
 
 test('an id-less child notification is broadcast to every LIVE transport', () => {
   const { mux } = makeMux()
-  const t1 = mux.createTransport(TransportClass)
-  const t2 = mux.createTransport(TransportClass)
+  const t1 = create(mux)
+  const t2 = create(mux)
   mux.onChildMessage({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
   expect(t1.send).toHaveBeenCalledTimes(1)
   expect(t2.send).toHaveBeenCalledTimes(1)
@@ -155,11 +164,11 @@ test('an id-less child notification is broadcast to every LIVE transport', () =>
 
 test('a released transport no longer receives broadcasts and its pending route is cancelled', () => {
   const { mux, written } = makeMux()
-  const t1 = mux.createTransport(TransportClass)
-  const t2 = mux.createTransport(TransportClass)
+  const t1 = create(mux)
+  const t2 = create(mux)
   t1.onmessage({ jsonrpc: '2.0', id: 5, method: 'tools/list', params: {} })
   const g1 = written[0].id
-  mux.releaseTransport(t1)
+  mux.releaseTransport(t1 as unknown as McpTransport)
   // Broadcast reaches only t2 now.
   mux.onChildMessage({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
   expect(t1.send).not.toHaveBeenCalled()
@@ -171,7 +180,7 @@ test('a released transport no longer receives broadcasts and its pending route i
 
 test('a child error reply to the forwarded initialize is relayed to the waiter and resets so a later initialize retries', () => {
   const { mux, written } = makeMux()
-  const t = mux.createTransport(TransportClass)
+  const t = create(mux)
   t.onmessage(initRequest(1))
   const globalId = written[0].id
   // The child rejects the initialize with an error (no result): it must NOT be
@@ -182,7 +191,7 @@ test('a child error reply to the forwarded initialize is relayed to the waiter a
 
   // The init state reset, so a subsequent initialize re-forwards to the child
   // (the cache never populated) — a single failure can't wedge every future client.
-  const t2 = mux.createTransport(TransportClass)
+  const t2 = create(mux)
   t2.onmessage(initRequest(2))
   expect(written).toHaveLength(2)
   expect(written[1].method).toBe('initialize')
@@ -190,8 +199,8 @@ test('a child error reply to the forwarded initialize is relayed to the waiter a
 
 test('closeAll closes every live transport and clears pending routes', () => {
   const { mux, written } = makeMux()
-  const t1 = mux.createTransport(TransportClass)
-  const t2 = mux.createTransport(TransportClass)
+  const t1 = create(mux)
+  const t2 = create(mux)
   t1.onmessage({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
   mux.closeAll()
   expect(t1.close).toHaveBeenCalledTimes(1)

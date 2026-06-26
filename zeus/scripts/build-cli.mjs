@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-// Bundles bin/cli.js (and its src/ deps) into a single self-contained
+// Bundles bin/cli.ts (and its src/ deps) into a single self-contained
 // dist/zeus.cjs that install.sh ships verbatim from GitHub Releases. esbuild
 // inlines the package version as the __BRIDGE_VERSION__ global referenced by
 // the CLI (so --version works in the bundle), prepends a node shebang so the
@@ -20,7 +20,7 @@ const outfile = join(root, 'dist', 'zeus.cjs')
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 
 await build({
-  entryPoints: [join(root, 'bin', 'cli.js')],
+  entryPoints: [join(root, 'bin', 'cli.ts')],
   outfile,
   bundle: true,
   platform: 'node',
@@ -31,7 +31,7 @@ await build({
   external: ['bufferutil', 'utf-8-validate'],
   define: { __BRIDGE_VERSION__: JSON.stringify(pkg.version) },
   // No shebang banner: esbuild preserves the entry's own `#!/usr/bin/env node`
-  // (bin/cli.js line 1) atop the bundle. Adding a banner shebang too yields a
+  // (bin/cli.ts line 1) atop the bundle. Adding a banner shebang too yields a
   // duplicate second `#!` line, which Node rejects as a syntax error.
 })
 

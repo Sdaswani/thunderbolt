@@ -2,21 +2,22 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-'use strict'
-
-const { test, expect } = require('bun:test')
-const { makeLogger, buildOriginAllowlist, classifyMethod, classifyId, classifyFrame, safeClassifyFrame } = require('./log')
+import { test, expect } from 'bun:test'
+import { makeLogger, buildOriginAllowlist, classifyMethod, classifyId, classifyFrame, safeClassifyFrame } from './log'
+import type { LogFields } from './types'
 
 /** A fake writable sink that records every written line. */
-const makeSink = () => {
-  const lines = []
+type RecordingSink = NodeJS.WritableStream & { lines: string[] }
+
+const makeSink = (): RecordingSink => {
+  const lines: string[] = []
   return {
     lines,
-    write(chunk) {
+    write(chunk: string) {
       lines.push(chunk)
       return true
     },
-  }
+  } as unknown as RecordingSink
 }
 
 test('json mode emits one parseable JSON object per call with event + allowlisted scalars only', () => {
@@ -43,7 +44,12 @@ test('text mode emits a single human line; verbose=false suppresses info but kee
 test('a fields object with a nested object or non-allowlisted key is stripped before output', () => {
   const sink = makeSink()
   const logger = makeLogger({ json: true, verbose: true, sink })
-  logger.info('frame', { method: 'x', params: { secret: 'leak' }, nested: { a: 1 }, password: 'hunter2' })
+  logger.info('frame', {
+    method: 'x',
+    params: { secret: 'leak' },
+    nested: { a: 1 },
+    password: 'hunter2',
+  } as unknown as LogFields)
   const parsed = JSON.parse(sink.lines[0])
   expect(parsed).toEqual({ level: 'info', event: 'frame', method: 'x' })
   expect(sink.lines[0]).not.toContain('leak')

@@ -2,36 +2,71 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-'use strict'
+import { test, expect, mock, type Mock } from 'bun:test'
+import { EventEmitter } from 'node:events'
+import { createHash } from 'node:crypto'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import { startMcpFace, bearerMatches } from './mcp-server'
+import type { ChildExit, JsonRpcMessage, Logger, McpFaceDeps, McpFaceOptions, SuperviseChildOptions } from './types'
 
-const { test, expect, mock } = require('bun:test')
-const { EventEmitter } = require('node:events')
-const { createHash } = require('node:crypto')
-const { startMcpFace, bearerMatches } = require('./mcp-server')
+/** Fake http.Server shape: EventEmitter with listen/address/close. */
+type FakeServer = EventEmitter & {
+  listening: boolean
+  _port?: number
+  listen: Mock<(port: number, host: string, cb: () => void) => unknown>
+  address(): { port: number | undefined }
+  close: Mock<(cb?: () => void) => unknown>
+  closeAllConnections: Mock<() => void>
+}
+
+/** Fake StreamableHTTPServerTransport shape (one per HTTP request under the mux). */
+type MockTransport = {
+  onmessage: ((message: JsonRpcMessage) => void) | null
+  send: Mock<(message: JsonRpcMessage) => Promise<void>>
+  handleRequest: Mock<(req: IncomingMessage, res: ServerResponse, body?: unknown) => Promise<void>>
+  close: Mock<() => Promise<void>>
+}
+
+/** Fake request shape: an EventEmitter with method/url/headers + replayable body. */
+type FakeReq = EventEmitter & {
+  method: string
+  url: string
+  headers: Record<string, string>
+  destroy: Mock<() => void>
+  resume: Mock<() => void>
+  _body?: string
+}
+
+/** Captured supervise hooks the test drives. */
+type Hooks = {
+  onStdout?: (chunk: Buffer) => void
+  onExit?: (info: ChildExit) => void
+  onSpawnError?: (err: NodeJS.ErrnoException) => void
+}
 
 /** SHA-256 digest a string to a 32-byte buffer, matching the expected-bearer digest. */
-const digest = (value) => createHash('sha256').update(value).digest()
+const digest = (value: string): Buffer => createHash('sha256').update(value).digest()
 
 /** A silent PII-safe logger spy. */
 const makeLogger = () => ({
-  info: mock(() => {}),
-  warn: mock(() => {}),
-  error: mock(() => {}),
-  banner: mock(() => {}),
+  info: mock((_event: string) => {}),
+  warn: mock((_event: string) => {}),
+  error: mock((_event: string) => {}),
+  banner: mock((_url: string) => {}),
 })
 
 /** Fake http.Server: EventEmitter with listen/address/close. */
-const makeFakeServer = () => {
-  const server = new EventEmitter()
+const makeFakeServer = (): FakeServer => {
+  const server = new EventEmitter() as FakeServer
   server.listening = false
-  server.listen = mock((port, host, cb) => {
+  server.listen = mock((port: number, _host: string, cb: () => void) => {
     server._port = port === 0 ? 54321 : port
     server.listening = true
     queueMicrotask(cb)
     return server
   })
   server.address = () => ({ port: server._port })
-  server.close = mock((cb) => {
+  server.close = mock((cb?: () => void) => {
     server.listening = false
     if (cb) queueMicrotask(cb)
     return server
@@ -41,11 +76,11 @@ const makeFakeServer = () => {
 }
 
 /** Fake StreamableHTTPServerTransport (one per HTTP request under the multiplexer). */
-const makeFakeTransport = () => {
-  const transport = {
+const makeFakeTransport = (): MockTransport => {
+  const transport: MockTransport = {
     onmessage: null,
-    send: mock(() => Promise.resolve()),
-    handleRequest: mock(() => Promise.resolve()),
+    send: mock((_message: JsonRpcMessage) => Promise.resolve()),
+    handleRequest: mock((_req: IncomingMessage, _res: ServerResponse, _body?: unknown) => Promise.resolve()),
     close: mock(() => Promise.resolve()),
   }
   return transport
@@ -53,10 +88,10 @@ const makeFakeTransport = () => {
 
 /** Fake superviseChild controller capturing wiring + calls. */
 const makeFakeSupervisor = () => {
-  const calls = { stdin: [], paused: 0, resumed: 0, stopped: 0, killed: 0 }
+  const calls = { stdin: [] as string[], paused: 0, resumed: 0, stopped: 0, killed: 0 }
   const supervisor = {
     child: { stdin: new EventEmitter() },
-    writeStdin: mock((chunk) => {
+    writeStdin: mock((chunk: string | Buffer) => {
       calls.stdin.push(chunk.toString())
       return true
     }),
@@ -78,10 +113,10 @@ const makeFakeSupervisor = () => {
 }
 
 /** Build the injectable deps + capture the wired supervise hooks. */
-const makeHarness = (overrides = {}) => {
+const makeHarness = (overrides: Record<string, unknown> = {}) => {
   const server = makeFakeServer()
   const { supervisor, calls } = makeFakeSupervisor()
-  const hooks = {}
+  const hooks: Hooks = {}
   // The multiplexer creates one stateless transport per HTTP request. These
   // HTTP-face tests fire a single request each and exercise the shell (routing,
   // security, relay wiring), so the fake class returns ONE shared instance: a
@@ -90,7 +125,7 @@ const makeHarness = (overrides = {}) => {
   // covered against the real multiplexer in mcp-multiplexer.test.js and end-to-end
   // in mcp-server.integration.test.js.
   const transport = makeFakeTransport()
-  const transports = []
+  const transports: MockTransport[] = []
   // When set, the next dispatched request's handleRequest never settles, modelling
   // a long-lived open stream so its transport stays registered (LIVE) through
   // teardown — used to assert closeAll() closes live transports. Auto-clears.
@@ -99,7 +134,7 @@ const makeHarness = (overrides = {}) => {
     constructor() {
       if (hold.next) {
         hold.next = false
-        transport.handleRequest = mock(() => new Promise(() => {}))
+        transport.handleRequest = mock(() => new Promise<void>(() => {}))
       }
       transports.push(transport)
       return transport
@@ -108,7 +143,7 @@ const makeHarness = (overrides = {}) => {
   const deps = {
     createServer: mock(() => server),
     StreamableHTTPServerTransport: FakeTransport,
-    superviseChild: mock((opts) => {
+    superviseChild: mock((opts: SuperviseChildOptions) => {
       hooks.onStdout = opts.onStdout
       hooks.onExit = opts.onExit
       hooks.onSpawnError = opts.onSpawnError
@@ -116,10 +151,10 @@ const makeHarness = (overrides = {}) => {
     }),
     ...overrides,
   }
-  return { server, transport, transports, hold, supervisor, calls, hooks, deps }
+  return { server, transport, transports, hold, supervisor, calls, hooks, deps: deps as unknown as McpFaceDeps }
 }
 
-const baseOpts = (logger, deps, extra = {}) => ({
+const baseOpts = (logger: Logger, deps: McpFaceDeps, extra: Partial<McpFaceOptions> = {}): McpFaceOptions => ({
   launch: ['mcp-server'],
   host: '127.0.0.1',
   port: 0,
@@ -131,8 +166,13 @@ const baseOpts = (logger, deps, extra = {}) => ({
 })
 
 /** Fake request: an EventEmitter with method/url/headers + replayable body. */
-const makeReq = ({ method = 'POST', url = '/mcp', headers = {}, body } = {}) => {
-  const req = new EventEmitter()
+const makeReq = ({
+  method = 'POST',
+  url = '/mcp',
+  headers = {},
+  body,
+}: { method?: string; url?: string; headers?: Record<string, string>; body?: string } = {}): FakeReq => {
+  const req = new EventEmitter() as FakeReq
   req.method = method
   req.url = url
   req.headers = headers
@@ -145,13 +185,13 @@ const makeReq = ({ method = 'POST', url = '/mcp', headers = {}, body } = {}) => 
 /** Fake response capturing status + end. */
 const makeRes = () => {
   const res = {
-    statusCode: null,
-    headers: {},
+    statusCode: null as number | null,
+    headers: {} as Record<string, unknown>,
     ended: false,
-    writeHead: mock((status) => {
+    writeHead: mock((status: number) => {
       res.statusCode = status
     }),
-    setHeader: mock((k, v) => {
+    setHeader: mock((k: string, v: unknown) => {
       res.headers[k] = v
     }),
     end: mock(() => {
@@ -162,7 +202,7 @@ const makeRes = () => {
 }
 
 /** Emit a request through the server and replay its body chunks, then settle. */
-const fireRequest = async (server, req, res) => {
+const fireRequest = async (server: FakeServer, req: FakeReq, res: ReturnType<typeof makeRes>): Promise<void> => {
   server.emit('request', req, res)
   if (req.method === 'POST') {
     // Let the request handler attach its data/end listeners first.
@@ -277,8 +317,8 @@ test('a client that aborts the POST body (error) is dropped: no reply, no throw,
   const req = makeReq({ headers: {} })
   const res = makeRes()
   // No unhandledRejection escapes: readBody must never reject.
-  const rejections = []
-  const onRejection = (err) => rejections.push(err)
+  const rejections: unknown[] = []
+  const onRejection = (err: unknown) => rejections.push(err)
   process.on('unhandledRejection', onRejection)
   server.emit('request', req, res)
   await Promise.resolve() // let the handler attach its listeners
@@ -439,8 +479,8 @@ test('a rejecting transport.handleRequest is swallowed + logged, never escapes',
   const logger = makeLogger()
   const { server, transport, deps } = makeHarness()
   transport.handleRequest = mock(() => Promise.reject(Object.assign(new Error('gone'), { code: 'ERR_CLOSED' })))
-  const rejections = []
-  const onRejection = (err) => rejections.push(err)
+  const rejections: unknown[] = []
+  const onRejection = (err: unknown) => rejections.push(err)
   process.on('unhandledRejection', onRejection)
   await startMcpFace(baseOpts(logger, deps))
   const req = makeReq({ method: 'GET', url: '/mcp' })
@@ -459,7 +499,7 @@ test('HTTP onmessage relays a client request to child stdin as one NDJSON line (
   // A request goes through a per-request transport: fire one so the multiplexer
   // wires its onmessage, then drive that handler.
   await fireRequest(server, makeReq({ body: '{"jsonrpc":"2.0","method":"ping","id":7}' }), makeRes())
-  transport.onmessage({ jsonrpc: '2.0', method: 'ping', id: 7 })
+  transport.onmessage!({ jsonrpc: '2.0', method: 'ping', id: 7 })
   expect(calls.stdin).toHaveLength(1)
   // The client id (7) is remapped to a process-global id so concurrent clients
   // can't collide; the method is forwarded verbatim.
@@ -477,10 +517,10 @@ test('a child response routes back to the owning transport with the original cli
   // Forward a client request (id 7); the mux remaps it to a global id and
   // remembers the owning transport.
   await fireRequest(server, makeReq({ body: '{"jsonrpc":"2.0","method":"tools/list","id":7}' }), makeRes())
-  transport.onmessage({ jsonrpc: '2.0', method: 'tools/list', id: 7 })
+  transport.onmessage!({ jsonrpc: '2.0', method: 'tools/list', id: 7 })
   const globalId = JSON.parse(calls.stdin[0]).id
   // The child answers under the global id; the mux routes it home as id 7.
-  hooks.onStdout(Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: globalId })}\n`))
+  hooks.onStdout!(Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', result: { tools: [] }, id: globalId })}\n`))
   expect(transport.send).toHaveBeenCalledTimes(1)
   expect(transport.send.mock.calls[0][0]).toEqual({ jsonrpc: '2.0', result: { tools: [] }, id: 7 })
 })
@@ -493,7 +533,7 @@ test('an id-less child notification is broadcast to a live transport', async () 
   // receive a server->client notification.
   hold.next = true
   await fireRequest(server, makeReq({ method: 'GET', url: '/mcp' }), makeRes())
-  hooks.onStdout(Buffer.from('{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n'))
+  hooks.onStdout!(Buffer.from('{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}\n'))
   expect(transport.send).toHaveBeenCalledTimes(1)
   expect(transport.send.mock.calls[0][0]).toEqual({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })
 })
@@ -501,18 +541,18 @@ test('an id-less child notification is broadcast to a live transport', async () 
 test('a rejecting transport.send (disconnected client) is swallowed + logged, never escapes', async () => {
   const logger = makeLogger()
   const { server, transport, calls, hooks, deps } = makeHarness()
-  const rejections = []
-  const onRejection = (err) => rejections.push(err)
+  const rejections: unknown[] = []
+  const onRejection = (err: unknown) => rejections.push(err)
   process.on('unhandledRejection', onRejection)
   await startMcpFace(baseOpts(logger, deps))
   // Forward a client request so the mux owns a pending route to this transport.
   await fireRequest(server, makeReq({ body: '{"jsonrpc":"2.0","method":"tools/list","id":7}' }), makeRes())
-  transport.onmessage({ jsonrpc: '2.0', method: 'tools/list', id: 7 })
+  transport.onmessage!({ jsonrpc: '2.0', method: 'tools/list', id: 7 })
   const globalId = JSON.parse(calls.stdin[0]).id
   // A stale/disconnected client makes the SDK reject on send; this must not surface
   // as an unhandledRejection (which the CLI's onFatal backstop would treat fatal).
   transport.send = mock(() => Promise.reject(Object.assign(new Error('closed'), { code: 'ERR_CLOSED' })))
-  hooks.onStdout(Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', result: {}, id: globalId })}\n`))
+  hooks.onStdout!(Buffer.from(`${JSON.stringify({ jsonrpc: '2.0', result: {}, id: globalId })}\n`))
   await new Promise((r) => setTimeout(r, 0))
   process.removeListener('unhandledRejection', onRejection)
   expect(rejections).toHaveLength(0)
@@ -524,7 +564,7 @@ test('a malformed child stdout line is dropped + logged by method/id only, never
   const logger = makeLogger()
   const { transport, hooks, deps } = makeHarness()
   await startMcpFace(baseOpts(logger, deps))
-  hooks.onStdout(Buffer.from('not json\n'))
+  hooks.onStdout!(Buffer.from('not json\n'))
   expect(transport.send).not.toHaveBeenCalled()
   expect(logger.warn).toHaveBeenCalled()
 })
@@ -537,7 +577,7 @@ test('child exit closes the http server + every live transport and resolves clos
   // through teardown — closeAll must then close it.
   hold.next = true
   await fireRequest(server, makeReq({ method: 'GET', url: '/mcp' }), makeRes())
-  hooks.onExit({ code: 0, signal: null })
+  hooks.onExit!({ code: 0, signal: null })
   expect(transport.close).toHaveBeenCalled()
   expect(server.close).toHaveBeenCalled()
 })
@@ -547,7 +587,7 @@ test('child self-exit propagates to onChildExit with the exit info', async () =>
   const { hooks, deps } = makeHarness()
   const onChildExit = mock(() => {})
   await startMcpFace(baseOpts(logger, deps, { onChildExit }))
-  hooks.onExit({ code: 0, signal: null })
+  hooks.onExit!({ code: 0, signal: null })
   expect(onChildExit).toHaveBeenCalledTimes(1)
   expect(onChildExit).toHaveBeenCalledWith({ code: 0, signal: null })
 })
@@ -556,7 +596,7 @@ test('child exit also force-closes lingering connections (closeAllConnections)',
   const logger = makeLogger()
   const { server, hooks, deps } = makeHarness()
   await startMcpFace(baseOpts(logger, deps))
-  hooks.onExit({ code: 1, signal: null })
+  hooks.onExit!({ code: 1, signal: null })
   expect(server.closeAllConnections).toHaveBeenCalled()
 })
 
@@ -577,7 +617,7 @@ test('close() AFTER the child self-exited resolves (no hang) and is idempotent',
   const { hooks, deps } = makeHarness()
   const face = await startMcpFace(baseOpts(logger, deps))
   // Drive the child self-exit first: this settles the close latch via finishClose.
-  hooks.onExit({ code: 0, signal: null })
+  hooks.onExit!({ code: 0, signal: null })
   // A close() on the already-settled latch must resolve immediately (setResolver
   // runs the resolver synchronously) rather than wait forever for a finishClose
   // that already fired.
@@ -611,7 +651,7 @@ test('a spawn ENOENT rejects with an unavailable error and only closes the serve
   const { server, hooks, calls, deps } = makeHarness()
   const promise = startMcpFace(baseOpts(logger, deps))
   // superviseChild is invoked synchronously inside startMcpFace; trigger spawn error.
-  hooks.onSpawnError(Object.assign(new Error('enoent'), { code: 'ENOENT' }))
+  hooks.onSpawnError!(Object.assign(new Error('enoent'), { code: 'ENOENT' }))
   await expect(promise).rejects.toMatchObject({ name: 'UnavailableError', code: 'ENOENT' })
   expect(server.close).toHaveBeenCalled()
   // The child never spawned, so onSpawnError must not attempt a kill.
@@ -621,7 +661,7 @@ test('a spawn ENOENT rejects with an unavailable error and only closes the serve
 test('a bind failure rejects with an unavailable error and SIGKILLs the child first', async () => {
   const logger = makeLogger()
   // Server whose listen never fires success but emits an error.
-  const server = new EventEmitter()
+  const server = new EventEmitter() as FakeServer
   server.listen = mock(() => {
     queueMicrotask(() => server.emit('error', Object.assign(new Error('in use'), { code: 'EADDRINUSE' })))
     return server

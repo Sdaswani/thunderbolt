@@ -2,17 +2,31 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-'use strict'
-
-const { test, expect, mock } = require('bun:test')
-const { EventEmitter } = require('node:events')
-const { superviseChild } = require('./child')
+import { test, expect, mock, type Mock } from 'bun:test'
+import { EventEmitter } from 'node:events'
+import { superviseChild } from './child'
+import type { Logger, SpawnFn, SuperviseChildOptions } from './types'
 
 /** Minimal fake ChildProcess: EventEmitter with controllable stdin/stdout. */
-const makeFakeChild = () => {
-  const child = new EventEmitter()
+type FakeChild = EventEmitter & {
+  killed: boolean
+  lastSignal?: NodeJS.Signals
+  kill: Mock<(signal?: NodeJS.Signals) => boolean>
+  stdin: {
+    destroyed: boolean
+    writableEnded: boolean
+    write: Mock<() => boolean>
+  }
+  stdout: EventEmitter & {
+    pause: Mock<() => void>
+    resume: Mock<() => void>
+  }
+}
+
+const makeFakeChild = (): FakeChild => {
+  const child = new EventEmitter() as FakeChild
   child.killed = false
-  child.kill = mock((signal) => {
+  child.kill = mock((signal?: NodeJS.Signals) => {
     child.killed = true
     child.lastSignal = signal
     return true
@@ -22,17 +36,17 @@ const makeFakeChild = () => {
     writableEnded: false,
     write: mock(() => true),
   }
-  child.stdout = new EventEmitter()
+  child.stdout = new EventEmitter() as FakeChild['stdout']
   child.stdout.pause = mock(() => {})
   child.stdout.resume = mock(() => {})
   return child
 }
 
-const noopLogger = { error: () => {}, warn: () => {}, info: () => {}, banner: () => {} }
+const noopLogger: Logger = { error: () => {}, warn: () => {}, info: () => {}, banner: () => {} }
 
-const baseOpts = (child, overrides = {}) => ({
+const baseOpts = (child: FakeChild, overrides: Partial<SuperviseChildOptions> = {}): SuperviseChildOptions => ({
   launch: ['node', 'agent.js'],
-  spawn: mock(() => child),
+  spawn: mock(() => child) as unknown as SpawnFn,
   onStdout: () => {},
   onExit: () => {},
   onSpawnError: () => {},
@@ -42,8 +56,8 @@ const baseOpts = (child, overrides = {}) => ({
 
 test('spawns exactly once with launch[0] + args and stdio pipe/pipe/inherit', () => {
   const child = makeFakeChild()
-  const spawn = mock(() => child)
-  superviseChild(baseOpts(child, { spawn }))
+  const spawn = mock((..._args: unknown[]) => child)
+  superviseChild(baseOpts(child, { spawn: spawn as unknown as SpawnFn }))
   expect(spawn).toHaveBeenCalledTimes(1)
   expect(spawn.mock.calls[0][0]).toBe('node')
   expect(spawn.mock.calls[0][1]).toEqual(['agent.js'])
@@ -52,8 +66,8 @@ test('spawns exactly once with launch[0] + args and stdio pipe/pipe/inherit', ()
 
 test('child stdout data is forwarded to onStdout', () => {
   const child = makeFakeChild()
-  const onStdout = mock(() => {})
-  superviseChild(baseOpts(child, { onStdout }))
+  const onStdout = mock((..._args: unknown[]) => {})
+  superviseChild(baseOpts(child, { onStdout: onStdout as unknown as SuperviseChildOptions['onStdout'] }))
   const chunk = Buffer.from('hello')
   child.stdout.emit('data', chunk)
   expect(onStdout).toHaveBeenCalledTimes(1)
@@ -62,8 +76,8 @@ test('child stdout data is forwarded to onStdout', () => {
 
 test('child exit fires onExit exactly once with {code,signal} and marks not-alive', () => {
   const child = makeFakeChild()
-  const onExit = mock(() => {})
-  const s = superviseChild(baseOpts(child, { onExit }))
+  const onExit = mock((..._args: unknown[]) => {})
+  const s = superviseChild(baseOpts(child, { onExit: onExit as unknown as SuperviseChildOptions['onExit'] }))
   expect(s.alive()).toBe(true)
   child.emit('exit', 0, null)
   child.emit('exit', 0, null) // second exit ignored
@@ -74,9 +88,14 @@ test('child exit fires onExit exactly once with {code,signal} and marks not-aliv
 
 test('a spawn error (ENOENT) calls onSpawnError and never onExit-as-success', () => {
   const child = makeFakeChild()
-  const onSpawnError = mock(() => {})
-  const onExit = mock(() => {})
-  const s = superviseChild(baseOpts(child, { onSpawnError, onExit }))
+  const onSpawnError = mock((..._args: unknown[]) => {})
+  const onExit = mock((..._args: unknown[]) => {})
+  const s = superviseChild(
+    baseOpts(child, {
+      onSpawnError: onSpawnError as unknown as SuperviseChildOptions['onSpawnError'],
+      onExit: onExit as unknown as SuperviseChildOptions['onExit'],
+    }),
+  )
   const err = Object.assign(new Error('not found'), { code: 'ENOENT' })
   child.emit('error', err)
   expect(onSpawnError).toHaveBeenCalledTimes(1)
@@ -143,8 +162,8 @@ test('kill() sends SIGKILL immediately and is idempotent', () => {
 
 test('NEVER respawns: a second exit does not trigger a new spawn', () => {
   const child = makeFakeChild()
-  const spawn = mock(() => child)
-  superviseChild(baseOpts(child, { spawn }))
+  const spawn = mock((..._args: unknown[]) => child)
+  superviseChild(baseOpts(child, { spawn: spawn as unknown as SpawnFn }))
   child.emit('exit', 0, null)
   child.emit('exit', 1, null)
   expect(spawn).toHaveBeenCalledTimes(1)

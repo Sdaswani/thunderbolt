@@ -8,33 +8,19 @@
 // (signal then a grace window then SIGKILL), and an immediate SIGKILL. It NEVER
 // restarts the child — on exit the supervisor reports once and stays dead.
 
-'use strict'
-
-const { spawn: defaultSpawn } = require('node:child_process')
+import { spawn as defaultSpawn } from 'node:child_process'
+import type { SuperviseChild } from './types'
 
 /** Time the child gets to exit on its own after a stop signal before SIGKILL. */
 const GRACE_MS = 2000
 
 /**
  * Spawn and supervise a single child process, exposing the controls the ACP/MCP
- * faces need. The child is spawned exactly once and never respawned.
- *
- * @param {Object} opts
- * @param {string[]} opts.launch - child launch argv: [program, ...args].
- * @param {Function} [opts.spawn] - injectable child_process.spawn.
- * @param {(chunk: Buffer) => void} opts.onStdout - called per stdout data chunk.
- * @param {(info: {code: number|null, signal: string|null}) => void} opts.onExit
- *   - called exactly once when the child exits.
- * @param {(err: NodeJS.ErrnoException) => void} opts.onSpawnError - called on a
- *   spawn-level error (e.g. ENOENT); the child never reaches onExit-as-success.
- * @param {{ error: Function }} opts.logger - PII-safe logger.
- * @param {number} [opts.graceMs] - grace window before SIGKILL on stop().
- * @returns {{ child: import('node:child_process').ChildProcess,
- *   writeStdin(chunk: string|Buffer): boolean, pauseStdout(): void,
- *   resumeStdout(): void, stop(signal?: NodeJS.Signals): void, kill(): void,
- *   alive(): boolean }}
+ * faces need. The child is spawned exactly once and never respawned. stdio:
+ * child stderr is inherited so its diagnostics pass straight through to the
+ * bridge's stderr and never pollute the bridge's stdout (sacred framing).
  */
-const superviseChild = ({
+const superviseChild: SuperviseChild = ({
   launch,
   spawn = defaultSpawn,
   onStdout,
@@ -43,14 +29,12 @@ const superviseChild = ({
   logger,
   graceMs = GRACE_MS,
 }) => {
-  // stdio: child stderr is inherited so its diagnostics pass straight through to
-  // the bridge's stderr and never pollute the bridge's stdout (sacred framing).
   const child = spawn(launch[0], launch.slice(1), { stdio: ['pipe', 'pipe', 'inherit'] })
 
   const state = { alive: true, exited: false }
-  let graceTimer = null
+  let graceTimer: NodeJS.Timeout | null = null
 
-  const clearGrace = () => {
+  const clearGrace = (): void => {
     if (graceTimer) {
       clearTimeout(graceTimer)
       graceTimer = null
@@ -63,7 +47,7 @@ const superviseChild = ({
     onSpawnError(err)
   })
 
-  child.stdout.on('data', onStdout)
+  child.stdout!.on('data', onStdout)
 
   child.on('exit', (code, signal) => {
     if (state.exited) return
@@ -77,16 +61,16 @@ const superviseChild = ({
     child,
 
     writeStdin(chunk) {
-      if (!state.alive || child.stdin.destroyed || child.stdin.writableEnded) return true
-      return child.stdin.write(chunk)
+      if (!state.alive || child.stdin!.destroyed || child.stdin!.writableEnded) return true
+      return child.stdin!.write(chunk)
     },
 
     pauseStdout() {
-      child.stdout.pause()
+      child.stdout!.pause()
     },
 
     resumeStdout() {
-      child.stdout.resume()
+      child.stdout!.resume()
     },
 
     stop(signal = 'SIGTERM') {
@@ -115,4 +99,4 @@ const superviseChild = ({
   }
 }
 
-module.exports = { superviseChild, GRACE_MS }
+export { superviseChild, GRACE_MS }

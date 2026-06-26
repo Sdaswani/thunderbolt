@@ -2,11 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-'use strict'
+import type { ChildExit, ExitCode, UnavailableErrorOptions } from './types'
 
 /**
  * Canonical sysexits exit-code table for the bridge.
- * @type {{ OK: 0, USAGE: 64, UNAVAILABLE: 69, SOFTWARE: 70, SIGINT: 130 }}
  */
 const EX = Object.freeze({
   OK: 0,
@@ -14,17 +13,16 @@ const EX = Object.freeze({
   UNAVAILABLE: 69,
   SOFTWARE: 70,
   SIGINT: 130,
-})
+} as const)
 
 /**
  * Node error codes that classify as EX_UNAVAILABLE (69) — the single source of
  * truth for the unavailable classification.
- * @type {Set<string>}
  */
-const UNAVAILABLE_CODES = new Set(['ENOENT', 'EADDRINUSE', 'EACCES', 'EADDRNOTAVAIL', 'ECONNREFUSED'])
+const UNAVAILABLE_CODES: Set<string> = new Set(['ENOENT', 'EADDRINUSE', 'EACCES', 'EADDRNOTAVAIL', 'ECONNREFUSED'])
 
 /** Fixed, PII-safe phrases for each unavailable Node error code. */
-const UNAVAILABLE_PHRASES = Object.freeze({
+const UNAVAILABLE_PHRASES: Record<string, string> = Object.freeze({
   ENOENT: 'command not found',
   EADDRINUSE: 'address in use',
   EACCES: 'permission denied',
@@ -34,8 +32,7 @@ const UNAVAILABLE_PHRASES = Object.freeze({
 
 /** A usage/validation error → exit 64. Names the offending flag, never user payload. */
 class UsageError extends Error {
-  /** @param {string} message */
-  constructor(message) {
+  constructor(message: string) {
     super(message)
     this.name = 'UsageError'
   }
@@ -43,11 +40,10 @@ class UsageError extends Error {
 
 /** A resource-unavailable error → exit 69. Carries a Node errorCode string. */
 class UnavailableError extends Error {
-  /** @param {{ code?: string, message?: string }} [opts] */
-  constructor(opts = {}) {
+  code?: string
+  constructor(opts: UnavailableErrorOptions = {}) {
     super(opts.message ?? opts.code ?? 'unavailable')
     this.name = 'UnavailableError'
-    /** @type {string|undefined} */
     this.code = opts.code
   }
 }
@@ -62,22 +58,18 @@ class SigintError extends Error {
 
 /**
  * Reads the Node error code (`err.code`) from an unknown value, if present.
- * @param {unknown} err
- * @returns {string|undefined}
  */
-const codeOf = (err) =>
-  typeof err === 'object' && err !== null && typeof (/** @type {{ code?: unknown }} */ (err).code) === 'string'
-    ? /** @type {{ code: string }} */ (err).code
+const codeOf = (err: unknown): string | undefined =>
+  typeof err === 'object' && err !== null && typeof (err as { code?: unknown }).code === 'string'
+    ? (err as { code: string }).code
     : undefined
 
 /**
  * Pure mapper from any thrown value to a sysexits exit code.
  * UsageError→64; UnavailableError or a Node error in the unavailable set→69;
  * a SIGINT marker→130; anything else→70.
- * @param {unknown} err
- * @returns {number}
  */
-const toExitCode = (err) => {
+const toExitCode = (err: unknown): ExitCode => {
   if (err instanceof UsageError) return EX.USAGE
   if (err instanceof SigintError) return EX.SIGINT
   if (err instanceof UnavailableError) return EX.UNAVAILABLE
@@ -90,10 +82,8 @@ const toExitCode = (err) => {
  * Pure mapper to a PII-safe, single-line, user-facing message. Embeds only the
  * Node errorCode (never err.message/stack for arbitrary errors), the failing
  * flag name for UsageError, and a fixed friendly phrase for the unavailable set.
- * @param {unknown} err
- * @returns {string}
  */
-const toMessage = (err) => {
+const toMessage = (err: unknown): string => {
   if (err instanceof UsageError) return err.message
   if (err instanceof SigintError) return 'interrupted'
   if (err instanceof UnavailableError) {
@@ -109,23 +99,12 @@ const toMessage = (err) => {
 /**
  * Pure: derive the bridge exit code from a child process exit. A clean exit
  * (code 0) → 0; a SIGINT signal → 130; any other nonzero code or signal → 70.
- * @param {{ code: number|null, signal: string|null }} exit
- * @returns {number}
  */
-const childExitToCode = (exit) => {
+const childExitToCode = (exit: ChildExit): ExitCode => {
   if (exit.signal === 'SIGINT') return EX.SIGINT
   if (exit.signal) return EX.SOFTWARE
   if (exit.code === 0) return EX.OK
   return EX.SOFTWARE
 }
 
-module.exports = {
-  EX,
-  UNAVAILABLE_CODES,
-  UsageError,
-  UnavailableError,
-  SigintError,
-  toExitCode,
-  toMessage,
-  childExitToCode,
-}
+export { EX, UNAVAILABLE_CODES, UsageError, UnavailableError, SigintError, toExitCode, toMessage, childExitToCode }

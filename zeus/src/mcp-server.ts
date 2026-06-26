@@ -25,19 +25,18 @@
 // cap, and deterministic never-orphan teardown. Prints the
 // `http://127.0.0.1:PORT/mcp` banner to stderr once listening.
 
-'use strict'
-
-const { createServer: defaultCreateServer } = require('node:http')
-const { createHash, timingSafeEqual } = require('node:crypto')
-const {
-  StreamableHTTPServerTransport: DefaultStreamableHTTPServerTransport,
-} = require('@modelcontextprotocol/sdk/server/streamableHttp.js')
-const { UnavailableError } = require('./errors')
-const { buildOriginAllowlist, safeClassifyFrame } = require('./log')
-const { createNdjsonReader } = require('./relay')
-const { createMultiplexer } = require('./mcp-multiplexer')
-const { superviseChild: defaultSuperviseChild } = require('./child')
-const { formatHostForUrl, makeCloseLatch } = require('./util')
+import { createServer as defaultCreateServer } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { createHash, timingSafeEqual } from 'node:crypto'
+import { StreamableHTTPServerTransport as DefaultStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import { UnavailableError } from './errors'
+import { buildOriginAllowlist, safeClassifyFrame } from './log'
+import { createNdjsonReader } from './relay'
+import { createMultiplexer } from './mcp-multiplexer'
+import { superviseChild as defaultSuperviseChild } from './child'
+import { formatHostForUrl, makeCloseLatch } from './util'
+import type { JsonRpcMessage, McpTransport, McpTransportClass, StartMcpFace } from './types'
 
 /** Default request body cap: 4 MiB. Larger POST bodies are rejected with 413. */
 const DEFAULT_BODY_CAP_BYTES = 4 << 20
@@ -47,7 +46,7 @@ const MCP_PATH = '/mcp'
 const MCP_METHODS = new Set(['POST', 'GET', 'DELETE'])
 
 /** SHA-256 digest a string to a fixed 32-byte buffer. */
-const sha256 = (value) => createHash('sha256').update(value).digest()
+const sha256 = (value: string): Buffer => createHash('sha256').update(value).digest()
 
 /**
  * Constant-time bearer comparison that never leaks length. The provided token is
@@ -55,17 +54,14 @@ const sha256 = (value) => createHash('sha256').update(value).digest()
  * token's pre-computed digest (also 32 bytes), so unequal input lengths can
  * never throw or short-circuit. The expected digest is hashed once per process
  * (the bearer is fixed) rather than per request.
- * @param {string|undefined} provided
- * @param {Buffer} expectedDigest - sha256(expectedBearer)
- * @returns {boolean}
  */
-const bearerMatches = (provided, expectedDigest) => {
+const bearerMatches = (provided: string | undefined, expectedDigest: Buffer): boolean => {
   if (typeof provided !== 'string') return false
   return timingSafeEqual(sha256(provided), expectedDigest)
 }
 
 /** Extract the `Bearer <token>` value from an Authorization header, or undefined. */
-const readBearer = (req) => {
+const readBearer = (req: IncomingMessage): string | undefined => {
   const header = req.headers.authorization
   if (typeof header !== 'string') return undefined
   const match = /^Bearer (.+)$/.exec(header)
@@ -73,7 +69,7 @@ const readBearer = (req) => {
 }
 
 /** Reply with a status code and no body leak. */
-const replyStatus = (res, status) => {
+const replyStatus = (res: ServerResponse, status: number): void => {
   res.writeHead(status)
   res.end()
 }
@@ -89,10 +85,8 @@ const MALFORMED = Symbol('malformed-body')
  * Parse a POST body to a JSON value. An empty body → undefined (a bodyless GET-
  * style POST); a non-empty body that isn't valid JSON → the MALFORMED sentinel
  * so the caller answers 400 instead of crashing the handler.
- * @param {string} body
- * @returns {unknown}
  */
-const parseBody = (body) => {
+const parseBody = (body: string): unknown => {
   if (body === '') return undefined
   try {
     return JSON.parse(body)
@@ -112,22 +106,19 @@ const parseBody = (body) => {
  * drains the rest of the stream (req.resume) so the socket stays healthy and the
  * caller's 413 response flushes cleanly — it does NOT destroy the socket (that
  * would surface as a client-side connection error).
- * @param {import('node:http').IncomingMessage} req
- * @param {number} cap
- * @returns {Promise<string|typeof BODY_TOO_LARGE|typeof BODY_ABORTED>}
  */
-const readBody = (req, cap) =>
+const readBody = (req: IncomingMessage, cap: number): Promise<string | typeof BODY_TOO_LARGE | typeof BODY_ABORTED> =>
   new Promise((resolve) => {
-    const chunks = []
+    const chunks: Buffer[] = []
     let size = 0
     let overflowed = false
     let settled = false
-    const settle = (value) => {
+    const settle = (value: string | typeof BODY_TOO_LARGE | typeof BODY_ABORTED): void => {
       if (settled) return
       settled = true
       resolve(value)
     }
-    req.on('data', (chunk) => {
+    req.on('data', (chunk: Buffer) => {
       if (overflowed) return
       size += chunk.length
       if (size > cap) {
@@ -149,22 +140,8 @@ const readBody = (req, cap) =>
  * Start the MCP Streamable HTTP face: bind, spawn the child MCP stdio server,
  * and multiplex many HTTP MCP clients onto the single child's NDJSON stdio.
  * Bearer-before-route, CORS, body cap, deterministic teardown, never-orphan.
- *
- * @param {Object} opts
- * @param {string[]} opts.launch - child launch argv.
- * @param {string} opts.host
- * @param {number} opts.port - 0 => OS-assigned ephemeral.
- * @param {string} [opts.bearer] - when set (always under --tunnel), gates every route.
- * @param {string[]} opts.allowOrigins
- * @param {boolean} opts.allowAnyOrigin
- * @param {number} [opts.bodyCapBytes]
- * @param {Object} opts.logger
- * @param {(info: {code: number|null, signal: string|null}) => void} [opts.onChildExit]
- *   - notified when the child exits so the caller can derive its exit code.
- * @param {Object} [opts.deps] - injectable { createServer, StreamableHTTPServerTransport, superviseChild, spawn }.
- * @returns {Promise<{ url: string, kill(): void, close(): Promise<void> }>}
  */
-const startMcpFace = ({
+const startMcpFace: StartMcpFace = ({
   launch,
   host,
   port,
@@ -177,7 +154,13 @@ const startMcpFace = ({
   deps = {},
 }) => {
   const createServer = deps.createServer ?? defaultCreateServer
-  const StreamableHTTPServerTransport = deps.StreamableHTTPServerTransport ?? DefaultStreamableHTTPServerTransport
+  // Adapt the SDK transport to the bridge's structural McpTransportClass. A single
+  // `as` (not `as unknown as`) keeps the conversion checked: it requires the SDK
+  // class to still structurally overlap the stateless-constructor + handleRequest/
+  // send/close/onmessage shape the mux drives, so constructor or method drift in a
+  // future SDK surfaces here at compile time instead of silently at runtime.
+  const StreamableHTTPServerTransport =
+    deps.StreamableHTTPServerTransport ?? (DefaultStreamableHTTPServerTransport as McpTransportClass)
   const superviseChild = deps.superviseChild ?? defaultSuperviseChild
   const isOriginAllowed = buildOriginAllowlist({ allowOrigins, allowAnyOrigin })
 
@@ -203,9 +186,9 @@ const startMcpFace = ({
     // result, to every queued initialize; for id-less notifications, broadcast to
     // every live transport). A malformed line is dropped + logged PII-safe.
     const reader = createNdjsonReader((line) => {
-      const message = (() => {
+      const message: JsonRpcMessage | null = (() => {
         try {
-          return JSON.parse(line)
+          return JSON.parse(line) as JsonRpcMessage
         } catch {
           logger.warn('drop-child-frame', safeClassifyFrame(line))
           return null
@@ -244,7 +227,7 @@ const startMcpFace = ({
       },
     })
 
-    const applyCors = (req, res) => {
+    const applyCors = (req: IncomingMessage, res: ServerResponse): void => {
       const origin = req.headers.origin
       if (allowAnyOrigin) {
         res.setHeader('Access-Control-Allow-Origin', '*')
@@ -275,10 +258,10 @@ const startMcpFace = ({
     // arity (the POST path always passes its parsed body, possibly undefined;
     // GET/DELETE pass none). The transport is registered for the lifetime of the
     // request and unregistered once handleRequest settles.
-    const dispatch = (res, makeHandle) => {
+    const dispatch = (res: ServerResponse, makeHandle: (transport: McpTransport) => Promise<void>): void => {
       const transport = mux.createTransport(StreamableHTTPServerTransport)
       Promise.resolve(makeHandle(transport))
-        .catch((err) => {
+        .catch((err: NodeJS.ErrnoException) => {
           logger.warn('drop-http-frame', { errorCode: err && err.code })
           if (res.writable && !res.writableEnded && !res.headersSent) replyStatus(res, 500)
         })
@@ -314,7 +297,7 @@ const startMcpFace = ({
       }
 
       const path = (req.url ?? '').split('?')[0]
-      if (path !== MCP_PATH || !MCP_METHODS.has(req.method)) {
+      if (path !== MCP_PATH || !MCP_METHODS.has(req.method!)) {
         replyStatus(res, 404)
         return
       }
@@ -338,7 +321,7 @@ const startMcpFace = ({
       dispatch(res, (transport) => transport.handleRequest(req, res))
     })
 
-    server.on('error', (err) => {
+    server.on('error', (err: NodeJS.ErrnoException) => {
       // Bind failures (EADDRINUSE/EACCES) arrive here before 'listening'.
       supervisor.kill() // never-orphan
       server.close()
@@ -346,7 +329,7 @@ const startMcpFace = ({
     })
 
     server.listen(port, host, () => {
-      const actualPort = server.address().port
+      const actualPort = (server.address() as AddressInfo).port
       const url = `http://${formatHostForUrl(host)}:${actualPort}${MCP_PATH}`
       logger.banner(url)
 
@@ -364,9 +347,4 @@ const startMcpFace = ({
   })
 }
 
-module.exports = {
-  startMcpFace,
-  bearerMatches,
-  DEFAULT_BODY_CAP_BYTES,
-  MCP_PATH,
-}
+export { startMcpFace, bearerMatches, DEFAULT_BODY_CAP_BYTES, MCP_PATH }

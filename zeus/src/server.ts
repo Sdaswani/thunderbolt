@@ -8,13 +8,14 @@
 // single-client newest-wins, and pause/resume backpressure. Prints the
 // `ws://127.0.0.1:PORT` banner to stderr once listening.
 
-'use strict'
-
-const { UnavailableError } = require('./errors')
-const { buildOriginAllowlist, safeClassifyFrame } = require('./log')
-const { createNdjsonReader, frameToWs, wsToFrame } = require('./relay')
-const { superviseChild: defaultSuperviseChild } = require('./child')
-const { formatHostForUrl, makeCloseLatch } = require('./util')
+import type { AddressInfo } from 'node:net'
+import type { WebSocket } from 'ws'
+import { UnavailableError } from './errors'
+import { buildOriginAllowlist, safeClassifyFrame } from './log'
+import { createNdjsonReader, frameToWs, wsToFrame } from './relay'
+import { superviseChild as defaultSuperviseChild } from './child'
+import { formatHostForUrl, makeCloseLatch } from './util'
+import type { ChildSupervisor, StartBridge, WebSocketServerClass } from './types'
 
 /** Pause child stdout once a socket buffers more than this many bytes. */
 const HIGH_WATER = 1 << 20 // 1 MiB
@@ -26,20 +27,8 @@ const CLOSE_NORMAL = 1000
 /**
  * Start the ACP WebSocket face: bind, spawn the child, and bridge NDJSON stdio
  * to a single newest-wins WebSocket client with an Origin gate and backpressure.
- *
- * @param {Object} opts
- * @param {string[]} opts.launch - child launch argv.
- * @param {string} opts.host
- * @param {number} opts.port - 0 => OS-assigned ephemeral.
- * @param {string[]} opts.allowOrigins
- * @param {boolean} opts.allowAnyOrigin
- * @param {Object} opts.logger
- * @param {(info: {code: number|null, signal: string|null}) => void} [opts.onChildExit]
- *   - notified when the child exits so the caller can derive its exit code.
- * @param {Object} [opts.deps] - injectable { WebSocketServer, spawn, superviseChild }.
- * @returns {Promise<{ url: string, kill(): void, close(): Promise<void> }>}
  */
-const startBridge = ({
+const startBridge: StartBridge = ({
   launch,
   host,
   port,
@@ -50,17 +39,18 @@ const startBridge = ({
   deps = {},
 }) => {
   // The real ws dep is resolved lazily so fully-faked unit tests never load it.
-  const WebSocketServer = deps.WebSocketServer ?? require('ws').WebSocketServer
+  const WebSocketServer: WebSocketServerClass =
+    deps.WebSocketServer ?? (require('ws') as typeof import('ws')).WebSocketServer
   const superviseChild = deps.superviseChild ?? defaultSuperviseChild
   const isOriginAllowed = buildOriginAllowlist({ allowOrigins, allowAnyOrigin })
 
   return new Promise((resolve, reject) => {
     const latch = makeCloseLatch()
-    let client = null
-    let supervisor = null
+    let client: WebSocket | null = null
+    let supervisor: ChildSupervisor | null = null
     let paused = false
 
-    const sendToClient = (line) => {
+    const sendToClient = (line: string): void => {
       if (!client || client.readyState !== client.OPEN) return
       const payload = frameToWs(line)
       // The send callback fires once this frame has flushed to the socket; use it
@@ -68,12 +58,12 @@ const startBridge = ({
       client.send(payload, () => {
         if (paused && client && client.bufferedAmount < LOW_WATER) {
           paused = false
-          supervisor.resumeStdout()
+          supervisor!.resumeStdout()
         }
       })
       if (client.bufferedAmount > HIGH_WATER && !paused) {
         paused = true
-        supervisor.pauseStdout()
+        supervisor!.pauseStdout()
       }
     }
 
@@ -91,7 +81,7 @@ const startBridge = ({
     const wss = new WebSocketServer({
       host,
       port,
-      verifyClient: ({ origin }) => isOriginAllowed(origin),
+      verifyClient: ({ origin }: { origin?: string }) => isOriginAllowed(origin),
     })
 
     const finishClose = latch.finishClose
@@ -114,14 +104,14 @@ const startBridge = ({
       },
     })
 
-    wss.on('error', (err) => {
+    wss.on('error', (err: NodeJS.ErrnoException) => {
       // Bind failures (EADDRINUSE/EACCES) arrive here before 'listening'.
-      supervisor.kill() // never-orphan
+      supervisor!.kill() // never-orphan
       wss.close()
       reject(new UnavailableError({ code: err.code }))
     })
 
-    wss.on('connection', (ws) => {
+    wss.on('connection', (ws: WebSocket) => {
       // newest-wins: a new client supersedes the prior one (closed 1000).
       if (client && client.readyState === client.OPEN) {
         client.close(CLOSE_NORMAL)
@@ -131,10 +121,10 @@ const startBridge = ({
         // The prior client congested and physically paused child.stdout; the new
         // client must not inherit a wedged stream.
         paused = false
-        supervisor.resumeStdout()
+        supervisor!.resumeStdout()
       }
 
-      ws.on('message', (data) => {
+      ws.on('message', (data: Buffer) => {
         const raw = typeof data === 'string' ? data : data.toString('utf8')
 
         const frame = (() => {
@@ -151,9 +141,9 @@ const startBridge = ({
 
         // Child stdin backpressure: writeStdin returns false when the pipe is
         // full — stop reading WS until the child stdin drains.
-        if (supervisor.writeStdin(frame) === false) {
+        if (supervisor!.writeStdin(frame) === false) {
           ws.pause()
-          supervisor.child.stdin.once('drain', () => ws.resume())
+          supervisor!.child.stdin!.once('drain', () => ws.resume())
         }
       })
 
@@ -163,20 +153,20 @@ const startBridge = ({
     })
 
     wss.on('listening', () => {
-      const actualPort = wss.address().port
+      const actualPort = (wss.address() as AddressInfo).port
       const url = `ws://${formatHostForUrl(host)}:${actualPort}`
       logger.banner(url)
 
       resolve({
         url,
-        kill: () => supervisor.kill(), // immediate SIGKILL — never-orphan backstop
+        kill: () => supervisor!.kill(), // immediate SIGKILL — never-orphan backstop
         close: () =>
           new Promise((resolveOuter) => {
             // If the child already exited the latch is settled and setResolver
             // resolves synchronously; otherwise the resolver fires on finishClose.
             latch.setResolver(resolveOuter)
             if (client) client.close(CLOSE_NORMAL)
-            supervisor.stop() // grace -> SIGKILL (idempotent once gone), never-orphan
+            supervisor!.stop() // grace -> SIGKILL (idempotent once gone), never-orphan
             wss.close(finishClose)
           }),
       })
@@ -184,4 +174,4 @@ const startBridge = ({
   })
 }
 
-module.exports = { startBridge, HIGH_WATER, LOW_WATER, CLOSE_NORMAL }
+export { startBridge, HIGH_WATER, LOW_WATER, CLOSE_NORMAL }

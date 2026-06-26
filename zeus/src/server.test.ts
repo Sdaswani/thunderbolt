@@ -2,19 +2,64 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-'use strict'
-
-const { test, expect, mock } = require('bun:test')
-const { EventEmitter } = require('node:events')
-const { startBridge, HIGH_WATER, LOW_WATER, CLOSE_NORMAL } = require('./server')
+import { test, expect, mock, type Mock } from 'bun:test'
+import { EventEmitter } from 'node:events'
+import { startBridge, HIGH_WATER, LOW_WATER, CLOSE_NORMAL } from './server'
+import type { BridgeDeps, BridgeOptions, ChildExit, SuperviseChildOptions } from './types'
 
 const OPEN = 1
 
+/** The options object the WebSocketServer constructor captures. */
+type WssOpts = {
+  host: string
+  port: number
+  verifyClient: (info: { origin: string | undefined }) => boolean
+}
+
+/** The structural shape a captured fake WebSocketServer instance exposes. */
+type FakeWssInstance = EventEmitter & {
+  _port: number
+  closed?: boolean
+  address(): { port: number }
+  close(cb?: () => void): void
+}
+
+/** Fake WS client socket shape. */
+type FakeWs = EventEmitter & {
+  OPEN: number
+  readyState: number
+  bufferedAmount: number
+  lastCloseCode?: number
+  send: Mock<(data: unknown, cb?: () => void) => void>
+  close: Mock<(code?: number) => void>
+  pause: Mock<() => void>
+  resume: Mock<() => void>
+}
+
+type FakeStdin = EventEmitter & { destroyed: boolean }
+
+/** Fake supervisor shape captured so the test can drive child stdout/exit. */
+type FakeSupervisor = {
+  child: { stdin: FakeStdin }
+  onStdout: ((chunk: Buffer) => void) | null
+  onExit: ((info: ChildExit) => void) | null
+  onSpawnError: ((err: NodeJS.ErrnoException) => void) | null
+  launch?: string[]
+  writeStdin: Mock<(...args: unknown[]) => boolean>
+  pauseStdout: Mock<() => void>
+  resumeStdout: Mock<() => void>
+  stop: Mock<() => void>
+  kill: Mock<() => void>
+  alive: () => boolean
+}
+
 /** Fake WebSocketServer: EventEmitter capturing its options, with address/close. */
 const makeFakeWss = () => {
-  let opts = null
+  let opts: WssOpts | null = null
   class FakeWss extends EventEmitter {
-    constructor(o) {
+    _port: number
+    closed?: boolean
+    constructor(o: WssOpts) {
       super()
       opts = o
       this._port = 5123
@@ -22,7 +67,7 @@ const makeFakeWss = () => {
     address() {
       return { port: this._port }
     }
-    close(cb) {
+    close(cb?: () => void) {
       this.closed = true
       if (cb) cb()
     }
@@ -31,15 +76,15 @@ const makeFakeWss = () => {
 }
 
 /** Fake WS client socket. */
-const makeFakeWs = (overrides = {}) => {
-  const ws = new EventEmitter()
+const makeFakeWs = (overrides: Partial<FakeWs> = {}): FakeWs => {
+  const ws = new EventEmitter() as FakeWs
   ws.OPEN = OPEN
   ws.readyState = OPEN
   ws.bufferedAmount = 0
-  ws.send = mock((data, cb) => {
+  ws.send = mock((_data: unknown, cb?: () => void) => {
     if (cb) cb()
   })
-  ws.close = mock((code) => {
+  ws.close = mock((code?: number) => {
     ws.lastCloseCode = code
     ws.readyState = 3
   })
@@ -50,21 +95,21 @@ const makeFakeWs = (overrides = {}) => {
 
 /** Fake supervisor captured so the test can drive child stdout/exit. */
 const makeFakeSupervisor = () => {
-  const stdin = new EventEmitter()
+  const stdin = new EventEmitter() as FakeStdin
   stdin.destroyed = false
-  const sup = {
+  const sup: FakeSupervisor = {
     child: { stdin },
     onStdout: null,
     onExit: null,
     onSpawnError: null,
-    writeStdin: mock(() => true),
+    writeStdin: mock((..._args: unknown[]) => true),
     pauseStdout: mock(() => {}),
     resumeStdout: mock(() => {}),
     stop: mock(() => {}),
     kill: mock(() => {}),
     alive: () => true,
   }
-  const factory = (args) => {
+  const factory = (args: SuperviseChildOptions): FakeSupervisor => {
     sup.onStdout = args.onStdout
     sup.onExit = args.onExit
     sup.onSpawnError = args.onSpawnError
@@ -76,7 +121,11 @@ const makeFakeSupervisor = () => {
 
 const noopLogger = { error: () => {}, warn: mock(() => {}), info: () => {}, banner: mock(() => {}) }
 
-const start = (over = {}) => {
+/** Package a fake WebSocketServer class + supervisor factory into the ACP-face deps bundle. */
+const makeDeps = (WebSocketServer: unknown, superviseChild: unknown): BridgeDeps =>
+  ({ WebSocketServer, superviseChild }) as unknown as BridgeDeps
+
+const start = (over: Partial<BridgeOptions> = {}) => {
   const { FakeWss, getOpts } = makeFakeWss()
   const { sup, factory } = makeFakeSupervisor()
   const logger = {
@@ -92,7 +141,7 @@ const start = (over = {}) => {
     allowOrigins: [],
     allowAnyOrigin: false,
     logger,
-    deps: { WebSocketServer: FakeWss, superviseChild: factory },
+    deps: makeDeps(FakeWss, factory),
     ...over,
   })
   // The promise resolves on 'listening'; expose the wss to drive it.
@@ -100,10 +149,10 @@ const start = (over = {}) => {
 }
 
 test('binds on 127.0.0.1 and resolves url ws://127.0.0.1:PORT, calling logger.banner once', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -117,7 +166,7 @@ test('binds on 127.0.0.1 and resolves url ws://127.0.0.1:PORT, calling logger.ba
     allowOrigins: [],
     allowAnyOrigin: false,
     logger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   const face = await p
@@ -127,10 +176,10 @@ test('binds on 127.0.0.1 and resolves url ws://127.0.0.1:PORT, calling logger.ba
 })
 
 test('a listen EADDRINUSE rejects with an unavailable error and SIGKILLs the child first', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -143,7 +192,7 @@ test('a listen EADDRINUSE rejects with an unavailable error and SIGKILLs the chi
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('error', Object.assign(new Error('in use'), { code: 'EADDRINUSE' }))
   await expect(p).rejects.toMatchObject({ name: 'UnavailableError', code: 'EADDRINUSE' })
@@ -155,7 +204,7 @@ test('Origin gate rejects a disallowed Origin and accepts a loopback/undefined O
   // this asserts the gate predicate without resolving the (intentionally
   // unobserved) listening promise.
   const { getOpts } = start()
-  const verifyClient = getOpts().verifyClient
+  const verifyClient = getOpts()!.verifyClient
   expect(verifyClient({ origin: 'http://evil.com' })).toBe(false)
   expect(verifyClient({ origin: 'http://localhost:3000' })).toBe(true)
   expect(verifyClient({ origin: undefined })).toBe(true)
@@ -163,14 +212,14 @@ test('Origin gate rejects a disallowed Origin and accepts a loopback/undefined O
 
 test('--allow-any-origin accepts any Origin (gate disabled)', () => {
   const { getOpts } = start({ allowAnyOrigin: true })
-  expect(getOpts().verifyClient({ origin: 'http://evil.com' })).toBe(true)
+  expect(getOpts()!.verifyClient({ origin: 'http://evil.com' })).toBe(true)
 })
 
 test('newest-wins: a second connection closes the first with 1000 and becomes sole pump', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -183,7 +232,7 @@ test('newest-wins: a second connection closes the first with 1000 and becomes so
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   await p
@@ -198,10 +247,10 @@ test('newest-wins: a second connection closes the first with 1000 and becomes so
 })
 
 test('supersession physically resumes child stdout the prior client had paused (no wedge)', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -214,7 +263,7 @@ test('supersession physically resumes child stdout the prior client had paused (
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   await p
@@ -224,7 +273,7 @@ test('supersession physically resumes child stdout the prior client had paused (
   first.bufferedAmount = HIGH_WATER + 1
   first.send = mock(() => {}) // callback never invoked -> stays paused
   wssRef.emit('connection', first)
-  sup.onStdout(Buffer.from('{"a":1}\n'))
+  sup.onStdout!(Buffer.from('{"a":1}\n'))
   expect(sup.pauseStdout).toHaveBeenCalledTimes(1)
   expect(sup.resumeStdout).not.toHaveBeenCalled()
   // A new client supersedes the wedged one; it must physically resume stdout.
@@ -233,16 +282,16 @@ test('supersession physically resumes child stdout the prior client had paused (
   expect(first.close).toHaveBeenCalledWith(CLOSE_NORMAL)
   expect(sup.resumeStdout).toHaveBeenCalledTimes(1)
   // child output now flows to the new client (not wedged behind the old pause).
-  sup.onStdout(Buffer.from('{"b":2}\n'))
+  sup.onStdout!(Buffer.from('{"b":2}\n'))
   expect(second.send).toHaveBeenCalledTimes(1)
   expect(second.send.mock.calls[0][0]).toBe('{"b":2}')
 })
 
 test('child stdout NDJSON line is frameToWs-d and sent to the live client (no trailing newline)', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -255,22 +304,22 @@ test('child stdout NDJSON line is frameToWs-d and sent to the live client (no tr
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   await p
   const ws = makeFakeWs()
   wssRef.emit('connection', ws)
-  sup.onStdout(Buffer.from('{"jsonrpc":"2.0","result":1,"id":2}\n'))
+  sup.onStdout!(Buffer.from('{"jsonrpc":"2.0","result":1,"id":2}\n'))
   expect(ws.send).toHaveBeenCalledTimes(1)
   expect(ws.send.mock.calls[0][0]).toBe('{"jsonrpc":"2.0","result":1,"id":2}')
 })
 
 test('inbound WS message is wsToFrame-d and written to child stdin with a trailing newline', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -283,7 +332,7 @@ test('inbound WS message is wsToFrame-d and written to child stdin with a traili
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   await p
@@ -294,10 +343,10 @@ test('inbound WS message is wsToFrame-d and written to child stdin with a traili
 })
 
 test('backpressure: high ws.bufferedAmount pauses child stdout; drain resumes it', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -310,29 +359,29 @@ test('backpressure: high ws.bufferedAmount pauses child stdout; drain resumes it
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   await p
   // send callback deferred so we control when 'flush' (resume check) fires.
-  const pending = []
+  const pending: Array<(() => void) | undefined> = []
   const ws = makeFakeWs()
   ws.bufferedAmount = HIGH_WATER + 1
-  ws.send = mock((_data, cb) => pending.push(cb))
+  ws.send = mock((_data: unknown, cb?: () => void) => pending.push(cb))
   wssRef.emit('connection', ws)
-  sup.onStdout(Buffer.from('{"a":1}\n'))
+  sup.onStdout!(Buffer.from('{"a":1}\n'))
   expect(sup.pauseStdout).toHaveBeenCalledTimes(1)
   // drain below low-water then fire the send callback => resume.
   ws.bufferedAmount = LOW_WATER - 1
-  pending.forEach((cb) => cb())
+  pending.forEach((cb) => cb?.())
   expect(sup.resumeStdout).toHaveBeenCalledTimes(1)
 })
 
 test('backpressure: writeStdin returning false pauses WS reading until drain', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -346,7 +395,7 @@ test('backpressure: writeStdin returning false pauses WS reading until drain', a
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   await p
@@ -359,10 +408,10 @@ test('backpressure: writeStdin returning false pauses WS reading until drain', a
 })
 
 test('a malformed frame (either direction) is dropped and logged by method/id only, not fatal', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -376,7 +425,7 @@ test('a malformed frame (either direction) is dropped and logged by method/id on
     allowOrigins: [],
     allowAnyOrigin: false,
     logger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   await p
@@ -386,7 +435,7 @@ test('a malformed frame (either direction) is dropped and logged by method/id on
   ws.emit('message', 'not json {{{')
   expect(sup.writeStdin).not.toHaveBeenCalled()
   // malformed child line dropped (no send)
-  sup.onStdout(Buffer.from('still not json{{{\n'))
+  sup.onStdout!(Buffer.from('still not json{{{\n'))
   expect(ws.send).not.toHaveBeenCalled()
   // logged, and never the raw body
   const loggedBodies = logger.warn.mock.calls.flat().map((a) => JSON.stringify(a))
@@ -395,10 +444,10 @@ test('a malformed frame (either direction) is dropped and logged by method/id on
 })
 
 test('child exit closes the server + client(1000) and resolves close()', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -413,13 +462,13 @@ test('child exit closes the server + client(1000) and resolves close()', async (
     allowAnyOrigin: false,
     logger: noopLogger,
     onChildExit,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   const face = await p
   const ws = makeFakeWs()
   wssRef.emit('connection', ws)
-  sup.onExit({ code: 0, signal: null })
+  sup.onExit!({ code: 0, signal: null })
   expect(ws.close).toHaveBeenCalledWith(CLOSE_NORMAL)
   expect(wssRef.closed).toBe(true)
   expect(onChildExit).toHaveBeenCalledWith({ code: 0, signal: null })
@@ -428,10 +477,10 @@ test('child exit closes the server + client(1000) and resolves close()', async (
 })
 
 test('close() AFTER the child self-exited resolves (no hang) and is idempotent', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -444,12 +493,12 @@ test('close() AFTER the child self-exited resolves (no hang) and is idempotent',
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   const face = await p
   // Drive the child self-exit first: this settles the close latch via finishClose.
-  sup.onExit({ code: 0, signal: null })
+  sup.onExit!({ code: 0, signal: null })
   // close() on the already-settled latch resolves immediately (setResolver runs
   // the resolver synchronously) rather than hang on a finishClose that already fired.
   await face.close()
@@ -458,10 +507,10 @@ test('close() AFTER the child self-exited resolves (no hang) and is idempotent',
 })
 
 test('the resolved face exposes kill() which immediately SIGKILLs the child', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -474,7 +523,7 @@ test('the resolved face exposes kill() which immediately SIGKILLs the child', as
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   const face = await p
@@ -484,10 +533,10 @@ test('the resolved face exposes kill() which immediately SIGKILLs the child', as
 })
 
 test('close() closes sockets, closes the server, and stops the child (grace->SIGKILL)', async () => {
-  let wssRef
+  let wssRef!: FakeWssInstance
   const { FakeWss } = makeFakeWss()
   class Capture extends FakeWss {
-    constructor(o) {
+    constructor(o: WssOpts) {
       super(o)
       wssRef = this
     }
@@ -500,7 +549,7 @@ test('close() closes sockets, closes the server, and stops the child (grace->SIG
     allowOrigins: [],
     allowAnyOrigin: false,
     logger: noopLogger,
-    deps: { WebSocketServer: Capture, superviseChild: factory },
+    deps: makeDeps(Capture, factory),
   })
   wssRef.emit('listening')
   const face = await p
