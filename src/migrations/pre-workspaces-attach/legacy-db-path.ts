@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { isOpfsAvailable as defaultIsOpfsAvailable } from '@/lib/platform'
+import type { LegacyBackend } from './legacy-reader'
 
 /**
  * Legacy SQLite filenames the pre-workspaces builds wrote to:
@@ -32,32 +33,105 @@ const fileExistsInOpfs = async (root: FileSystemDirectoryHandle, name: string): 
   }
 }
 
+/**
+ * Probe IndexedDB for a wa-sqlite database stored by `IDBBatchAtomicVFS`.
+ * Chrome/Edge/Firefox web builds use that VFS (per `getPowerSyncOptions`'s
+ * `default` config), which stores each SQLite file as an IDB database named
+ * after the filename.
+ *
+ * Prefers `indexedDB.databases()` (Chrome/Edge/Safari/Firefox 126+). Falls
+ * back to a probe-then-delete-stub approach for older Firefox: open the DB,
+ * inspect `oldVersion` in `onupgradeneeded` (0 means the DB didn't exist),
+ * then `deleteDatabase` if we created a stub.
+ */
+const databaseExistsInIdb = async (name: string): Promise<boolean> => {
+  if (typeof indexedDB === 'undefined') {
+    return false
+  }
+  if (typeof indexedDB.databases === 'function') {
+    try {
+      const dbs = await indexedDB.databases()
+      return dbs.some((d) => d.name === name)
+    } catch {
+      // Fall through to the probe-via-open fallback below. Some browsers
+      // throw on `.databases()` under restricted contexts.
+    }
+  }
+  return await new Promise<boolean>((resolve) => {
+    let existedBefore = true
+    const req = indexedDB.open(name)
+    req.onupgradeneeded = (event) => {
+      if (event.oldVersion === 0) {
+        existedBefore = false
+      }
+      // Intentionally don't create any object stores — we're only probing.
+    }
+    req.onsuccess = () => {
+      const db = req.result
+      db.close()
+      if (!existedBefore) {
+        // Clean up the empty stub our probe just created.
+        indexedDB.deleteDatabase(name)
+      }
+      resolve(existedBefore)
+    }
+    req.onerror = () => resolve(false)
+    req.onblocked = () => resolve(false)
+  })
+}
+
 export type LegacyDbProbeDeps = {
   isOpfsAvailable?: () => Promise<boolean>
   getStorageRoot?: () => Promise<FileSystemDirectoryHandle>
+  /**
+   * IDB existence probe. Injectable for tests (happy-dom doesn't implement
+   * IndexedDB). Production callers leave it defaulted to the real probe.
+   */
+  idbDatabaseExists?: (name: string) => Promise<boolean>
 }
 
 /**
- * Returns the filename of the legacy SQLite file present on disk, or `null`
- * when none exists. Looks only at OPFS — both wa-sqlite VFS variants (OPFS and
- * Tauri's OPFSCoopSyncVFS) store the SQLite file at the OPFS root, and private
- * browsing (no OPFS) means the legacy build was running on `:memory:` so
- * there's nothing to migrate.
+ * Where the legacy file lives. The backend determines which VFS the
+ * legacy-reader needs to register when opening the file.
+ */
+export type LegacyDbProbeResult = {
+  filename: LegacyDbFilename
+  backend: LegacyBackend
+}
+
+/**
+ * Returns the legacy SQLite file's filename and backend, or `null` when none
+ * exists. Probes BOTH backends because the codebase splits VFS by platform
+ * (see `getPowerSyncOptions` in `src/db/powersync/database.ts`):
  *
- * Deps are exposed for tests (happy-dom doesn't implement OPFS). Production
- * callers leave them defaulted.
+ *   - OPFS (`OPFSCoopSyncVFS`): Tauri builds + Safari web. File is an OPFS
+ *     entry at the root with the literal filename.
+ *   - IDB (`IDBBatchAtomicVFS`): Chrome/Edge/Firefox web. File is an IDB
+ *     *database* named after the filename.
+ *
+ * OPFS is checked first because it's cheap (file-handle lookup, no async
+ * round-trip). IDB only runs when OPFS misses, so the IDB-only cohort still
+ * pays a single `databases()` round-trip rather than two.
+ *
+ * Deps are exposed for tests (happy-dom doesn't implement either backend).
+ * Production callers leave them defaulted.
  */
 export const findLegacyDbFilename = async ({
   isOpfsAvailable = defaultIsOpfsAvailable,
   getStorageRoot = () => navigator.storage.getDirectory(),
-}: LegacyDbProbeDeps = {}): Promise<LegacyDbFilename | null> => {
-  if (!(await isOpfsAvailable())) {
-    return null
+  idbDatabaseExists = databaseExistsInIdb,
+}: LegacyDbProbeDeps = {}): Promise<LegacyDbProbeResult | null> => {
+  if (await isOpfsAvailable()) {
+    const root = await getStorageRoot()
+    for (const name of legacyDbFilenames) {
+      if (await fileExistsInOpfs(root, name)) {
+        return { filename: name, backend: 'opfs' }
+      }
+    }
   }
-  const root = await getStorageRoot()
   for (const name of legacyDbFilenames) {
-    if (await fileExistsInOpfs(root, name)) {
-      return name
+    if (await idbDatabaseExists(name)) {
+      return { filename: name, backend: 'idb' }
     }
   }
   return null

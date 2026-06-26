@@ -13,12 +13,9 @@ import {
   settingsTable,
   tasksTable,
 } from '@/db/tables'
-import { Database } from 'bun:sqlite'
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
-import { and, eq } from 'drizzle-orm'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'bun:test'
+import { and, eq, sql } from 'drizzle-orm'
+import type { LegacyBackend, LegacyReader } from './legacy-reader'
 import { runLocalDbMigration } from './local-db-migration'
 import { setCompletionFlag } from './completion-flag'
 
@@ -27,98 +24,86 @@ const otherServerId = '00000000-0000-0000-0000-000000000bbb'
 const personalWorkspaceId = '00000000-0000-0000-0000-000000000ccc'
 
 /**
- * Pre-Workspaces schema subset — every row-bearing table the migration touches,
- * with the columns that existed on the build immediately preceding Workspaces v1
- * (i.e. before `workspace_id` and `scope` were added). Used to seed the legacy
- * SQLite file the tests ATTACH onto the new DB.
+ * In-memory stand-in for the production `LegacyReader`. The production reader
+ * spins up a fresh wa-sqlite engine against IDB or OPFS — neither of which
+ * exists under bun's test runtime. Decoupling the migration's unit tests from
+ * the wa-sqlite plumbing keeps the migration logic itself in scope while
+ * leaving the wa-sqlite path to be exercised in a real browser (see
+ * docs/workspaces-v1-data-migration-plan-v2.md, follow-up B).
  */
-const legacySchemaSql = [
-  `CREATE TABLE chat_threads (
-     id TEXT PRIMARY KEY,
-     title TEXT,
-     is_encrypted INTEGER DEFAULT 0,
-     deleted_at TEXT,
-     user_id TEXT
-   )`,
-  `CREATE TABLE chat_messages (
-     id TEXT PRIMARY KEY,
-     content TEXT,
-     role TEXT,
-     chat_thread_id TEXT,
-     deleted_at TEXT,
-     user_id TEXT
-   )`,
-  `CREATE TABLE tasks (
-     id TEXT PRIMARY KEY,
-     item TEXT,
-     "order" INTEGER DEFAULT 0,
-     is_complete INTEGER DEFAULT 0,
-     deleted_at TEXT,
-     user_id TEXT
-   )`,
-  `CREATE TABLE models (
-     id TEXT PRIMARY KEY,
-     provider TEXT,
-     name TEXT,
-     model TEXT,
-     enabled INTEGER DEFAULT 1,
-     deleted_at TEXT,
-     user_id TEXT
-   )`,
-  `CREATE TABLE agents (
-     id TEXT PRIMARY KEY,
-     name TEXT NOT NULL,
-     type TEXT NOT NULL,
-     transport TEXT NOT NULL,
-     url TEXT NOT NULL,
-     enabled INTEGER DEFAULT 1 NOT NULL,
-     deleted_at TEXT,
-     user_id TEXT
-   )`,
-  `CREATE TABLE settings (
-     id TEXT PRIMARY KEY,
-     value TEXT
-   )`,
-  `CREATE TABLE mcp_servers (
-     id TEXT PRIMARY KEY,
-     name TEXT,
-     enabled INTEGER DEFAULT 1,
-     deleted_at TEXT,
-     user_id TEXT
-   )`,
-  // Legacy local-only table from THU-505. THU-579 reverts it; the migration
-  // copies api_key values into the new models.api_key column on the way in.
-  `CREATE TABLE models_secrets (
-     id TEXT PRIMARY KEY,
-     api_key TEXT
-   )`,
-]
-
-const seedLegacyDb = (path: string): void => {
-  const legacy = new Database(path)
-  for (const stmt of legacySchemaSql) {
-    legacy.run(stmt)
-  }
-  legacy.run(`INSERT INTO chat_threads (id, title, user_id) VALUES ('t1', 'Thread 1', 'user-A')`)
-  legacy.run(`INSERT INTO chat_threads (id, title, user_id) VALUES ('t2', 'Thread 2', 'user-A')`)
-  legacy.run(
-    `INSERT INTO chat_messages (id, content, role, chat_thread_id, user_id) VALUES ('m1', 'hi', 'user', 't1', 'user-A')`,
-  )
-  legacy.run(`INSERT INTO tasks (id, item, "order") VALUES ('task1', 'Buy milk', 1)`)
-  legacy.run(`INSERT INTO models (id, provider, name, model, enabled) VALUES ('mdl1', 'openai', 'GPT-4', 'gpt-4', 1)`)
-  legacy.run(`INSERT INTO models_secrets (id, api_key) VALUES ('mdl1', 'sk-legacy')`)
-  legacy.run(
-    `INSERT INTO agents (id, name, type, transport, url, enabled) VALUES ('ag1', 'Test agent', 'remote-acp', 'websocket', 'wss://x.example/acp', 1)`,
-  )
-  legacy.run(`INSERT INTO settings (id, value) VALUES ('theme', 'dark')`)
-  legacy.run(`INSERT INTO mcp_servers (id, name, enabled) VALUES ('mcp1', 'GitHub MCP', 1)`)
-  legacy.close()
+type FakeLegacyTable = {
+  columns: readonly string[]
+  rows: readonly unknown[][]
 }
 
-describe('runLocalDbMigration', () => {
-  let tmpDir: string
-  let legacyPath: string
+type FakeLegacySchema = Record<string, FakeLegacyTable>
 
+const makeFakeReader = (schema: FakeLegacySchema): LegacyReader & { closed: boolean } => {
+  const tables = new Map(Object.entries(schema))
+  const reader = {
+    closed: false,
+    hasTable: async (name: string) => tables.has(name),
+    columnNames: async (name: string) => [...(tables.get(name)?.columns ?? [])],
+    selectAll: async (name: string) => (tables.get(name)?.rows ?? []).map((r) => [...r]),
+    close: async () => {
+      reader.closed = true
+    },
+  }
+  return reader
+}
+
+const openReaderFor = (schema: FakeLegacySchema) => {
+  return async (_filename: string, _backend: LegacyBackend) => makeFakeReader(schema)
+}
+
+const legacyDbHandle = { filename: 'thunderbolt-sync.db', backend: 'idb' as const }
+
+/**
+ * Pre-Workspaces schema — every row-bearing table the migration touches, with
+ * the columns that existed on the build immediately preceding Workspaces v1
+ * (i.e. before `workspace_id` and `scope` were added).
+ */
+const fullLegacySeed = (): FakeLegacySchema => ({
+  chat_threads: {
+    columns: ['id', 'title', 'is_encrypted', 'deleted_at', 'user_id'],
+    rows: [
+      ['t1', 'Thread 1', 0, null, 'user-A'],
+      ['t2', 'Thread 2', 0, null, 'user-A'],
+    ],
+  },
+  chat_messages: {
+    columns: ['id', 'content', 'role', 'chat_thread_id', 'deleted_at', 'user_id'],
+    rows: [['m1', 'hi', 'user', 't1', null, 'user-A']],
+  },
+  tasks: {
+    columns: ['id', 'item', 'order', 'is_complete', 'deleted_at', 'user_id'],
+    rows: [['task1', 'Buy milk', 1, 0, null, null]],
+  },
+  models: {
+    columns: ['id', 'provider', 'name', 'model', 'enabled', 'deleted_at', 'user_id'],
+    rows: [['mdl1', 'openai', 'GPT-4', 'gpt-4', 1, null, null]],
+  },
+  agents: {
+    columns: ['id', 'name', 'type', 'transport', 'url', 'enabled', 'deleted_at', 'user_id'],
+    rows: [['ag1', 'Test agent', 'remote-acp', 'websocket', 'wss://x.example/acp', 1, null, null]],
+  },
+  settings: {
+    columns: ['id', 'value'],
+    rows: [['theme', 'dark']],
+  },
+  mcp_servers: {
+    columns: ['id', 'name', 'enabled', 'deleted_at', 'user_id'],
+    rows: [['mcp1', 'GitHub MCP', 1, null, null]],
+  },
+  // Legacy local-only table from THU-505. THU-579 reverts it; the migration
+  // copies api_key values into the new models.api_key column on the way in.
+  models_secrets: {
+    columns: ['id', 'api_key'],
+    rows: [['mdl1', 'sk-legacy']],
+  },
+})
+
+describe('runLocalDbMigration', () => {
   beforeAll(async () => {
     await setupTestDatabase()
   })
@@ -127,14 +112,8 @@ describe('runLocalDbMigration', () => {
     await teardownTestDatabase()
   })
 
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'thb-pre-ws-attach-'))
-    legacyPath = join(tmpDir, 'thunderbolt-sync.db')
-  })
-
   afterEach(async () => {
     localStorage.clear()
-    rmSync(tmpDir, { recursive: true, force: true })
     await resetTestDatabase()
   })
 
@@ -143,7 +122,7 @@ describe('runLocalDbMigration', () => {
       newDb: getDb(),
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: null,
+      legacyDb: null,
     })
 
     expect(result.ranAttach).toBe(false)
@@ -153,13 +132,13 @@ describe('runLocalDbMigration', () => {
 
   it('short-circuits when the completion flag is already set (idempotent re-run)', async () => {
     setCompletionFlag(serverId)
-    seedLegacyDb(legacyPath)
 
     const result = await runLocalDbMigration({
       newDb: getDb(),
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
     })
 
     expect(result.ranAttach).toBe(false)
@@ -168,13 +147,12 @@ describe('runLocalDbMigration', () => {
   })
 
   it('copies rows from each legacy table and stamps workspace_id on the new schema', async () => {
-    seedLegacyDb(legacyPath)
-
     const result = await runLocalDbMigration({
       newDb: getDb(),
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
     })
 
     expect(result.ranAttach).toBe(true)
@@ -216,13 +194,12 @@ describe('runLocalDbMigration', () => {
   })
 
   it('stamps scope=workspace on scope-aware tables (models / agents)', async () => {
-    seedLegacyDb(legacyPath)
-
     await runLocalDbMigration({
       newDb: getDb(),
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
     })
 
     const db = getDb()
@@ -236,7 +213,6 @@ describe('runLocalDbMigration', () => {
   })
 
   it('preserves existing rows in the new DB on PK conflict (sync-already-pulled-them-down case)', async () => {
-    seedLegacyDb(legacyPath)
     const db = getDb()
     // Simulate sync having pulled this thread down from BE before the migration ran.
     await db.insert(chatThreadsTable).values({
@@ -250,7 +226,8 @@ describe('runLocalDbMigration', () => {
       newDb: db,
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
     })
 
     // t1 already existed → INSERT OR IGNORE drops it; t2 still inserted.
@@ -261,19 +238,21 @@ describe('runLocalDbMigration', () => {
   })
 
   it('skips tables that do not exist in the legacy DB without erroring', async () => {
-    // Legacy DB that only has chat_threads — every other table in
-    // `allLegacyTables` is absent (including the THU-505 models_secrets table).
-    // Migration must succeed, report 0 for the missing tables, and stamp 0 api keys.
-    const legacy = new Database(legacyPath)
-    legacy.run(`CREATE TABLE chat_threads (id TEXT PRIMARY KEY, title TEXT, user_id TEXT)`)
-    legacy.run(`INSERT INTO chat_threads (id, title, user_id) VALUES ('only', 'Solo', 'u1')`)
-    legacy.close()
+    // Sparse legacy DB — only chat_threads is present. Migration must succeed,
+    // report 0 for the missing tables, and stamp 0 api keys.
+    const sparseSeed: FakeLegacySchema = {
+      chat_threads: {
+        columns: ['id', 'title', 'user_id'],
+        rows: [['only', 'Solo', 'u1']],
+      },
+    }
 
     const result = await runLocalDbMigration({
       newDb: getDb(),
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(sparseSeed),
     })
 
     expect(result.ranAttach).toBe(true)
@@ -289,7 +268,6 @@ describe('runLocalDbMigration', () => {
     // row, so workspace_id stays whatever sync set. The api-key UPDATE filters
     // on `workspace_id = personalWorkspaceId`, so a row living in a DIFFERENT
     // workspace must not be touched.
-    seedLegacyDb(legacyPath)
     const db = getDb()
     await db.insert(modelsTable).values({
       id: 'mdl1',
@@ -305,7 +283,8 @@ describe('runLocalDbMigration', () => {
       newDb: db,
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
     })
 
     const fromSync = await db
@@ -330,20 +309,19 @@ describe('runLocalDbMigration', () => {
       workspaceId: personalWorkspaceId,
       apiKey: 'sk-already-set',
     })
-    // Seed legacy with a DIFFERENT api key for the same model id.
-    const legacy = new Database(legacyPath)
-    for (const stmt of legacySchemaSql) {
-      legacy.run(stmt)
+
+    const seed = fullLegacySeed()
+    seed.models_secrets = {
+      columns: ['id', 'api_key'],
+      rows: [['mdl1', 'sk-legacy-should-be-ignored']],
     }
-    legacy.run(`INSERT INTO models (id, provider, name, model, enabled) VALUES ('mdl1', 'openai', 'GPT-4', 'gpt-4', 1)`)
-    legacy.run(`INSERT INTO models_secrets (id, api_key) VALUES ('mdl1', 'sk-legacy-should-be-ignored')`)
-    legacy.close()
 
     const result = await runLocalDbMigration({
       newDb: db,
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(seed),
     })
 
     expect(result.modelApiKeysCopied).toBe(0)
@@ -359,19 +337,18 @@ describe('runLocalDbMigration', () => {
     // is NULL (user opened the settings page and never typed anything, say).
     // Migration must leave the new row's api_key untouched — currently NULL,
     // it stays NULL; we don't UPDATE...SET api_key = NULL pointlessly.
-    const legacy = new Database(legacyPath)
-    for (const stmt of legacySchemaSql) {
-      legacy.run(stmt)
+    const seed = fullLegacySeed()
+    seed.models_secrets = {
+      columns: ['id', 'api_key'],
+      rows: [['mdl1', null]],
     }
-    legacy.run(`INSERT INTO models (id, provider, name, model, enabled) VALUES ('mdl1', 'openai', 'GPT-4', 'gpt-4', 1)`)
-    legacy.run(`INSERT INTO models_secrets (id, api_key) VALUES ('mdl1', NULL)`)
-    legacy.close()
 
     const result = await runLocalDbMigration({
       newDb: getDb(),
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(seed),
     })
 
     expect(result.modelApiKeysCopied).toBe(0)
@@ -380,12 +357,12 @@ describe('runLocalDbMigration', () => {
   })
 
   it('namespaces the completion flag per serverId — second server still runs migration', async () => {
-    seedLegacyDb(legacyPath)
     await runLocalDbMigration({
       newDb: getDb(),
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
     })
     await resetTestDatabase()
     // First server's flag is set; second server's isn't.
@@ -396,33 +373,111 @@ describe('runLocalDbMigration', () => {
       newDb: getDb(),
       serverId: otherServerId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
     })
     expect(result.ranAttach).toBe(true)
   })
 
-  it('detaches the legacy DB so a second run on the same connection can ATTACH again', async () => {
-    // ATTACH 'legacy' twice on the same connection without a DETACH in
-    // between fails with "database legacy is already in use". Use two
-    // serverIds (different flags) on the SAME `newDb` to verify the first
-    // run released the alias.
-    seedLegacyDb(legacyPath)
-    const db = getDb()
+  it('skips ps_crud replacement when the new DB has no ps_crud table (test env / pre-PowerSync)', async () => {
+    // bun-sqlite in tests doesn't initialise PowerSync's internal schema, so
+    // there's no `ps_crud` table. The migration must still complete and
+    // report 0 imported.
+    const result = await runLocalDbMigration({
+      newDb: getDb(),
+      serverId,
+      personalWorkspaceId,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(fullLegacySeed()),
+    })
+    expect(result.legacyPsCrudCopied).toBe(0)
+  })
 
-    const first = await runLocalDbMigration({
+  it('imports legacy ps_crud rows and wipes the data-copy churn when both DBs have ps_crud', async () => {
+    // Stand up an ad-hoc `ps_crud` table in the test DB so the migration's
+    // INSERT/DELETE path is exercised end-to-end. Includes `ps_tx` because
+    // the bump query at the end of replacePsCrudFromLegacy targets it.
+    const db = getDb()
+    await db.run(sql.raw(`CREATE TABLE ps_crud (id INTEGER PRIMARY KEY, tx_id INTEGER, data TEXT)`))
+    await db.run(sql.raw(`CREATE TABLE ps_tx (id INTEGER PRIMARY KEY, next_tx INTEGER)`))
+    await db.run(sql.raw(`INSERT INTO ps_tx (id, next_tx) VALUES (1, 5)`))
+    // Pre-seed a stray new-DB ps_crud row to confirm the wipe runs.
+    await db.run(sql.raw(`INSERT INTO ps_crud (id, tx_id, data) VALUES (999, 99, '{"churn":true}')`))
+
+    const seed = fullLegacySeed()
+    seed.ps_crud = {
+      columns: ['id', 'tx_id', 'data'],
+      rows: [
+        [1, 7, '{"op":"PUT","type":"chat_threads","id":"t1"}'],
+        [2, 8, '{"op":"PATCH","type":"models","id":"mdl1"}'],
+      ],
+    }
+
+    const result = await runLocalDbMigration({
       newDb: db,
       serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: openReaderFor(seed),
     })
-    expect(first.ranAttach).toBe(true)
 
-    const second = await runLocalDbMigration({
-      newDb: db,
-      serverId: otherServerId,
+    expect(result.legacyPsCrudCopied).toBe(2)
+    const remaining = (await db.all(sql.raw(`SELECT id, tx_id FROM ps_crud ORDER BY id`))) as readonly unknown[]
+    // The data-copy step's churn row (id=999) is gone; only the two imported
+    // legacy rows remain.
+    expect(remaining).toHaveLength(2)
+    // ps_tx.next_tx should be bumped to the max imported tx_id (8) so
+    // subsequent ops don't collide.
+    const tx = (await db.all(sql.raw(`SELECT next_tx FROM ps_tx WHERE id = 1`))) as readonly unknown[]
+    const txRow = tx[0]
+    const nextTx = Array.isArray(txRow) ? Number(txRow[0]) : Number((txRow as Record<string, unknown>).next_tx)
+    expect(nextTx).toBe(8)
+  })
+
+  it('closes the legacy reader after a successful run', async () => {
+    let opened: ReturnType<typeof makeFakeReader> | null = null
+    await runLocalDbMigration({
+      newDb: getDb(),
+      serverId,
       personalWorkspaceId,
-      legacyDbAttachPath: legacyPath,
+      legacyDb: legacyDbHandle,
+      openReader: async () => {
+        opened = makeFakeReader(fullLegacySeed())
+        return opened
+      },
     })
-    expect(second.ranAttach).toBe(true)
+    expect(opened).not.toBeNull()
+    expect(opened!.closed).toBe(true)
+  })
+
+  it('closes the legacy reader even if a copy step throws', async () => {
+    // Reader whose hasTable starts failing midway through the table walk.
+    // The migration's try/finally must still call close() so the next boot
+    // doesn't leak the wa-sqlite engine handle.
+    const base = makeFakeReader(fullLegacySeed())
+    let calls = 0
+    const erroringReader: LegacyReader = {
+      hasTable: async (name) => {
+        calls++
+        if (calls > 2) {
+          throw new Error('boom')
+        }
+        return base.hasTable(name)
+      },
+      columnNames: base.columnNames,
+      selectAll: base.selectAll,
+      close: base.close,
+    }
+
+    await expect(
+      runLocalDbMigration({
+        newDb: getDb(),
+        serverId,
+        personalWorkspaceId,
+        legacyDb: legacyDbHandle,
+        openReader: async () => erroringReader,
+      }),
+    ).rejects.toThrow('boom')
+    expect(base.closed).toBe(true)
   })
 })
