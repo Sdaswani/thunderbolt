@@ -195,7 +195,7 @@ const startMcpFace: StartMcpFace = ({
     // result, to every queued initialize; for id-less notifications, broadcast to
     // every live transport). A malformed line is dropped + logged PII-safe.
     const reader = createNdjsonReader((line) => {
-      const message: JsonRpcMessage | null = (() => {
+      const message = (() => {
         try {
           return JSON.parse(line) as JsonRpcMessage
         } catch {
@@ -375,4 +375,4 @@ const startMcpFace: StartMcpFace = ({
   })
 }
 
-export { startMcpFace, bearerMatches, DEFAULT_BODY_CAP_BYTES, MCP_PATH }
+export { startMcpFace, bearerMatches }

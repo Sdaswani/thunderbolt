@@ -112,4 +112,4 @@ const startTunnel: StartTunnel = ({
   })
 }
 
-export { startTunnel, generateBearer, BEARER_BYTES, URL_TIMEOUT_MS }
+export { startTunnel, generateBearer, BEARER_BYTES }

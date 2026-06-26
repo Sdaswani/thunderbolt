@@ -4,17 +4,7 @@
 
 import { test, expect, mock } from 'bun:test'
 import { run } from './cli'
-import type {
-  BridgeOptions,
-  GenerateBearer,
-  LoggerOptions,
-  MakeLogger,
-  McpFaceOptions,
-  StartBridge,
-  StartMcpFace,
-  StartTunnel,
-  TunnelOptions,
-} from '../src/types'
+import type { BridgeOptions, GenerateBearer, MakeLogger, StartBridge, StartMcpFace, StartTunnel } from '../src/types'
 
 /** A captured process-event listener (mirrors the CLI's injectable `on`). */
 type SignalListener = (...args: unknown[]) => unknown
@@ -45,12 +35,12 @@ const makeHarness = (over: { deps?: HarnessDeps } = {}) => {
   const face = { url: 'ws://127.0.0.1:5000', close: mock(async () => {}), kill: mock(() => {}) }
   const mcpFace = { url: 'http://127.0.0.1:54321/mcp', close: mock(async () => {}), kill: mock(() => {}) }
   const tunnel = { publicUrl: 'https://x.trycloudflare.com', bearer: 'secret', close: mock(async () => {}) }
-  const startBridge = mock(async (_opts: BridgeOptions) => face)
-  const startMcpFace = mock(async (_opts: McpFaceOptions) => mcpFace)
-  const startTunnel = mock(async (_opts: TunnelOptions) => tunnel)
+  const startBridge = mock<StartBridge>(async () => face)
+  const startMcpFace = mock<StartMcpFace>(async () => mcpFace)
+  const startTunnel = mock(async () => tunnel)
   const generateBearer = mock(() => 'minted-bearer')
   const logger = { info: mock(() => {}), warn: mock(() => {}), error: mock(() => {}), banner: mock(() => {}) }
-  const makeLogger = mock((_opts: LoggerOptions) => logger)
+  const makeLogger = mock<MakeLogger>(() => logger)
   const exit = mock(() => {})
   const stdout = makeSink()
   const stderr = makeSink()
@@ -152,11 +142,11 @@ test('bridge --mode acp -- <cmd> dispatches to startBridge with parsed launch + 
 test('--mode mcp --tunnel: face binds BEFORE the tunnel, which targets the face url with the same minted bearer', async () => {
   const h = makeHarness()
   const order: string[] = []
-  const startMcpFace = mock(async (_opts: McpFaceOptions) => {
+  const startMcpFace = mock<StartMcpFace>(async () => {
     order.push('face')
     return h.mcpFace
   })
-  const startTunnel = mock(async (_opts: TunnelOptions) => {
+  const startTunnel = mock<StartTunnel>(async () => {
     order.push('tunnel')
     return h.tunnel
   })
@@ -272,7 +262,7 @@ test('logger is constructed with json/verbose flags and the injected stderr sink
 test('insecureFlagWarnings are emitted to stderr (via logger.warn) before the face starts', async () => {
   const h = makeHarness()
   let warnedBeforeStart = false
-  const startBridge = mock(async (_opts: BridgeOptions) => {
+  const startBridge = mock(async () => {
     warnedBeforeStart = h.logger.warn.mock.calls.length > 0
     return h.face
   })

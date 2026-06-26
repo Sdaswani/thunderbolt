@@ -19,7 +19,7 @@ const EX = Object.freeze({
  * Node error codes that classify as EX_UNAVAILABLE (69) — the single source of
  * truth for the unavailable classification.
  */
-const UNAVAILABLE_CODES: Set<string> = new Set(['ENOENT', 'EADDRINUSE', 'EACCES', 'EADDRNOTAVAIL', 'ECONNREFUSED'])
+const UNAVAILABLE_CODES = new Set(['ENOENT', 'EADDRINUSE', 'EACCES', 'EADDRNOTAVAIL', 'ECONNREFUSED'])
 
 /** Fixed, PII-safe phrases for each unavailable Node error code. */
 const UNAVAILABLE_PHRASES: Record<string, string> = Object.freeze({
@@ -107,4 +107,4 @@ const childExitToCode = (exit: ChildExit): ExitCode => {
   return EX.SOFTWARE
 }
 
-export { EX, UNAVAILABLE_CODES, UsageError, UnavailableError, SigintError, toExitCode, toMessage, childExitToCode }
+export { EX, UsageError, UnavailableError, SigintError, toExitCode, toMessage, childExitToCode }

@@ -2,8 +2,6 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-'use strict'
-
 // Offline-tolerant integration test: drives the REAL
 // @modelcontextprotocol/server-everything child through the OFFICIAL MCP client
 // over the real HTTP face, with no mocks. It resolves server-everything locally

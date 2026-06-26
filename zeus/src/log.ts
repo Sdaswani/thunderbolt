@@ -17,17 +17,7 @@ import type {
  * Field keys that may be logged. Everything else is dropped so no payload data
  * leaks into a log line.
  */
-const ALLOWED_FIELDS: Set<string> = new Set([
-  'event',
-  'method',
-  'id',
-  'origin',
-  'host',
-  'port',
-  'code',
-  'errorCode',
-  'url',
-])
+const ALLOWED_FIELDS = new Set(['event', 'method', 'id', 'origin', 'host', 'port', 'code', 'errorCode', 'url'])
 
 /**
  * Keep only allowlisted keys whose values are scalars (string/number/boolean).
@@ -174,12 +164,4 @@ const safeClassifyFrame = (raw: string): ClassifiedFrame => {
   }
 }
 
-export {
-  makeLogger,
-  buildOriginAllowlist,
-  classifyMethod,
-  classifyId,
-  classifyFrame,
-  safeClassifyFrame,
-  normalizeOrigin,
-}
+export { makeLogger, buildOriginAllowlist, classifyMethod, classifyId, classifyFrame, safeClassifyFrame }

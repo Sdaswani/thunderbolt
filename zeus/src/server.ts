@@ -15,7 +15,7 @@ import { buildOriginAllowlist, safeClassifyFrame } from './log'
 import { createNdjsonReader, frameToWs, wsToFrame } from './relay'
 import { superviseChild as defaultSuperviseChild } from './child'
 import { formatHostForUrl, makeCloseLatch } from './util'
-import type { ChildSupervisor, StartBridge, WebSocketServerClass } from './types'
+import type { StartBridge, WebSocketServerClass } from './types'
 
 /** Pause child stdout once a socket buffers more than this many bytes. */
 const HIGH_WATER = 1 << 20 // 1 MiB
@@ -47,7 +47,6 @@ const startBridge: StartBridge = ({
   return new Promise((resolve, reject) => {
     const latch = makeCloseLatch()
     let client: WebSocket | null = null
-    let supervisor: ChildSupervisor | null = null
     let paused = false
 
     const sendToClient = (line: string): void => {
@@ -58,12 +57,12 @@ const startBridge: StartBridge = ({
       client.send(payload, () => {
         if (paused && client && client.bufferedAmount < LOW_WATER) {
           paused = false
-          supervisor!.resumeStdout()
+          supervisor.resumeStdout()
         }
       })
       if (client.bufferedAmount > HIGH_WATER && !paused) {
         paused = true
-        supervisor!.pauseStdout()
+        supervisor.pauseStdout()
       }
     }
 
@@ -86,7 +85,7 @@ const startBridge: StartBridge = ({
 
     const finishClose = latch.finishClose
 
-    supervisor = superviseChild({
+    const supervisor = superviseChild({
       launch,
       spawn: deps.spawn,
       logger,
@@ -106,7 +105,7 @@ const startBridge: StartBridge = ({
 
     wss.on('error', (err: NodeJS.ErrnoException) => {
       // Bind failures (EADDRINUSE/EACCES) arrive here before 'listening'.
-      supervisor!.kill() // never-orphan
+      supervisor.kill() // never-orphan
       wss.close()
       reject(new UnavailableError({ code: err.code }))
     })
@@ -121,7 +120,7 @@ const startBridge: StartBridge = ({
         // The prior client congested and physically paused child.stdout; the new
         // client must not inherit a wedged stream.
         paused = false
-        supervisor!.resumeStdout()
+        supervisor.resumeStdout()
       }
 
       ws.on('message', (data: Buffer) => {
@@ -141,9 +140,9 @@ const startBridge: StartBridge = ({
 
         // Child stdin backpressure: writeStdin returns false when the pipe is
         // full — stop reading WS until the child stdin drains.
-        if (supervisor!.writeStdin(frame) === false) {
+        if (supervisor.writeStdin(frame) === false) {
           ws.pause()
-          supervisor!.child.stdin!.once('drain', () => ws.resume())
+          supervisor.child.stdin!.once('drain', () => ws.resume())
         }
       })
 
@@ -159,14 +158,14 @@ const startBridge: StartBridge = ({
 
       resolve({
         url,
-        kill: () => supervisor!.kill(), // immediate SIGKILL — never-orphan backstop
+        kill: () => supervisor.kill(), // immediate SIGKILL — never-orphan backstop
         close: () =>
           new Promise((resolveOuter) => {
             // If the child already exited the latch is settled and setResolver
             // resolves synchronously; otherwise the resolver fires on finishClose.
             latch.setResolver(resolveOuter)
             if (client) client.close(CLOSE_NORMAL)
-            supervisor!.stop() // grace -> SIGKILL (idempotent once gone), never-orphan
+            supervisor.stop() // grace -> SIGKILL (idempotent once gone), never-orphan
             wss.close(finishClose)
           }),
       })
