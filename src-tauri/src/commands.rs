@@ -96,9 +96,12 @@ pub fn capabilities() -> Capabilities {
 
 // === Zeus bridge installer ===================================================================
 
-/// The canonical one-liner that installs the `zeus` bridge onto the user's PATH —
-/// identical to what the connect dialog shows for manual install. Keep in sync with
-/// `installCommand` in `src/lib/agent-bridge-command.ts`.
+/// The inner `curl … | bash` pipe that installs the `zeus` bridge onto the user's
+/// PATH. This is the raw pipeline only — the `install_bridge` call site below wraps
+/// it in `bash -c 'set -o pipefail; …'`. That wrapped form is what the connect
+/// dialog shows for manual install (`installCommand` in
+/// `src/lib/agent-bridge-command.ts`); keep this pipe in sync with the pipe inside
+/// that command.
 const ZEUS_INSTALL_CMD: &str =
     "curl -fsSL https://raw.githubusercontent.com/thunderbird/thunderbolt/main/zeus/install.sh | bash";
 
