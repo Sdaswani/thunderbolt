@@ -350,6 +350,8 @@ export const modelEditTooltip = (isSystemModel: boolean): string =>
 export const modelRemoveTooltip = (isSystemModel: boolean): string =>
   isSystemModel ? "Built-in models can't be removed" : 'Remove model'
 
+export const modelAddTooltip = (): string => 'Add model'
+
 export default function ModelsPage() {
   const db = useDatabase()
   const getProxyFetch = useProxyFetchGetter()
@@ -894,11 +896,18 @@ export default function ModelsPage() {
     <div className="flex flex-col gap-6 p-4 pb-12 w-full max-w-[760px] mx-auto">
       <PageHeader title="Models">
         <Dialog open={isAddDialogOpen} onOpenChange={handleDialogOpenChange}>
-          <DialogTrigger asChild>
-            <Button variant="outline" size="icon" className="rounded-lg">
-              <Plus />
-            </Button>
-          </DialogTrigger>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DialogTrigger asChild>
+                <Button variant="outline" size="icon" className="rounded-lg" aria-label="Add model">
+                  <Plus />
+                </Button>
+              </DialogTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              <p>{modelAddTooltip()}</p>
+            </TooltipContent>
+          </Tooltip>
           <ResponsiveModalContentComposable className="sm:max-w-[500px] max-h-[90vh] overflow-y-auto">
             <ResponsiveModalHeader>
               <ResponsiveModalTitle>Add Model</ResponsiveModalTitle>
