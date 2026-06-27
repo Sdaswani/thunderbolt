@@ -117,7 +117,7 @@ describe('runLocalDbMigration', () => {
     await resetTestDatabase()
   })
 
-  it('returns ranAttach=false and sets the flag when there is no legacy DB', async () => {
+  it('returns ranMigration=false and sets the flag when there is no legacy DB', async () => {
     const result = await runLocalDbMigration({
       newDb: getDb(),
       serverId,
@@ -125,7 +125,7 @@ describe('runLocalDbMigration', () => {
       legacyDb: null,
     })
 
-    expect(result.ranAttach).toBe(false)
+    expect(result.ranMigration).toBe(false)
     expect(result.rowsInsertedByTable).toEqual({})
     expect(localStorage.getItem(`pre_workspaces_attach_completed__${serverId}`)).toBe('1')
   })
@@ -141,7 +141,7 @@ describe('runLocalDbMigration', () => {
       openReader: openReaderFor(fullLegacySeed()),
     })
 
-    expect(result.ranAttach).toBe(false)
+    expect(result.ranMigration).toBe(false)
     const threads = await getDb().select().from(chatThreadsTable)
     expect(threads).toHaveLength(0)
   })
@@ -155,7 +155,7 @@ describe('runLocalDbMigration', () => {
       openReader: openReaderFor(fullLegacySeed()),
     })
 
-    expect(result.ranAttach).toBe(true)
+    expect(result.ranMigration).toBe(true)
     expect(result.rowsInsertedByTable['chat_threads']).toBe(2)
     expect(result.rowsInsertedByTable['chat_messages']).toBe(1)
     expect(result.rowsInsertedByTable['tasks']).toBe(1)
@@ -255,7 +255,7 @@ describe('runLocalDbMigration', () => {
       openReader: openReaderFor(sparseSeed),
     })
 
-    expect(result.ranAttach).toBe(true)
+    expect(result.ranMigration).toBe(true)
     expect(result.rowsInsertedByTable['chat_threads']).toBe(1)
     expect(result.rowsInsertedByTable['tasks']).toBe(0)
     expect(result.rowsInsertedByTable['agents']).toBe(0)
@@ -376,7 +376,7 @@ describe('runLocalDbMigration', () => {
       legacyDb: legacyDbHandle,
       openReader: openReaderFor(fullLegacySeed()),
     })
-    expect(result.ranAttach).toBe(true)
+    expect(result.ranMigration).toBe(true)
   })
 
   it('skips ps_crud replacement when the new DB has no ps_crud table (test env / pre-PowerSync)', async () => {
@@ -528,7 +528,7 @@ describe('runLocalDbMigration', () => {
       openReader: openReaderFor(seed),
     })
 
-    expect(result.ranAttach).toBe(true)
+    expect(result.ranMigration).toBe(true)
     // Destructive steps skipped → no per-table counts and no ps_crud import.
     expect(result.rowsInsertedByTable).toEqual({})
     expect(result.legacyPsCrudCopied).toBe(0)

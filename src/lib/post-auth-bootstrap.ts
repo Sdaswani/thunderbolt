@@ -106,7 +106,7 @@ const runBootstrapInternal = async (ctx: BootstrapContext): Promise<void> => {
         personalWorkspaceId,
         legacyDb,
       })
-      if (dbMigration.ranAttach) {
+      if (dbMigration.ranMigration) {
         trackEvent('migration_db_completed', {
           duration_ms: Math.round(dbMigration.durationMs),
           rows_inserted: dbMigration.rowsInsertedByTable,

@@ -345,7 +345,7 @@ export type RunLocalDbMigrationOpts = {
 
 export type RunLocalDbMigrationResult = {
   /** True iff the migration actually opened the legacy DB and walked tables. */
-  ranAttach: boolean
+  ranMigration: boolean
   durationMs: number
   /** Per-table count of rows that the INSERT OR IGNORE actually persisted. */
   rowsInsertedByTable: Record<string, number>
@@ -366,7 +366,7 @@ export type RunLocalDbMigrationResult = {
 }
 
 const emptyResult = (durationMs: number): RunLocalDbMigrationResult => ({
-  ranAttach: false,
+  ranMigration: false,
   durationMs,
   rowsInsertedByTable: {},
   modelApiKeysCopied: 0,
@@ -433,7 +433,7 @@ export const runLocalDbMigration = async ({
 
   setCompletionFlag(serverId)
   return {
-    ranAttach: true,
+    ranMigration: true,
     durationMs: performance.now() - startedAt,
     rowsInsertedByTable,
     modelApiKeysCopied,
