@@ -124,6 +124,34 @@ SELECT
 FROM "public"."user" u;
 --> statement-breakpoint
 
+-- Tripwire: every per-user table backfills `workspace_id` from `user_id`, and
+-- `uuid_generate_v5(NS, 'personal:' || NULL)` returns NULL — which would later
+-- fail the `SET NOT NULL` flip below with a vague constraint-violation error
+-- after most of the migration had already run. The pre-migration schema put
+-- user_id NOT NULL on every row (composite PK on resource tables, FK-NOT-NULL
+-- on chat tables), so any NULL here means a data invariant has already drifted
+-- somewhere upstream. Abort loudly before we touch anything.
+DO $$
+DECLARE
+  null_count bigint;
+BEGIN
+  SELECT
+    (SELECT count(*) FROM "powersync"."agents"         WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."chat_messages"  WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."chat_threads"   WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."model_profiles" WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."models"         WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."modes"          WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."prompts"        WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."skills"         WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."tasks"          WHERE "user_id" IS NULL) +
+    (SELECT count(*) FROM "powersync"."triggers"       WHERE "user_id" IS NULL)
+  INTO null_count;
+  IF null_count > 0 THEN
+    RAISE EXCEPTION 'pre-Workspaces backfill aborted: % rows have NULL user_id across powersync.* tables — workspace_id cannot be derived', null_count;
+  END IF;
+END $$;--> statement-breakpoint
+
 -- ADD workspace_id columns as NULLABLE first so the UPDATE backfill can run
 -- against existing rows. SET NOT NULL flips after the backfill below.
 ALTER TABLE "powersync"."agents" ADD COLUMN "workspace_id" text;--> statement-breakpoint
