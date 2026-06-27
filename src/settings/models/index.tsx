@@ -343,6 +343,13 @@ const EditModelModal = ({
   </Dialog>
 )
 
+/** Tooltip copy for model row edit/remove actions. Exported for unit tests. */
+export const modelEditTooltip = (isSystemModel: boolean): string =>
+  isSystemModel ? "Built-in models can't be edited" : 'Edit model'
+
+export const modelRemoveTooltip = (isSystemModel: boolean): string =>
+  isSystemModel ? "Built-in models can't be removed" : 'Remove model'
+
 export default function ModelsPage() {
   const db = useDatabase()
   const getProxyFetch = useProxyFetchGetter()
@@ -1224,20 +1231,40 @@ export default function ModelsPage() {
                     </TooltipProvider>
 
                     <ButtonGroup size="icon">
-                      <ButtonGroupItem
-                        variant="outline"
-                        onClick={() => setEditingModel(model)}
-                        disabled={isSystemModel}
-                      >
-                        <Pen className="h-3 w-3" />
-                      </ButtonGroupItem>
-                      <ButtonGroupItem
-                        variant="outline"
-                        onClick={() => dispatch({ type: 'OPEN_DELETE_CONFIRM', modelId: model.id })}
-                        disabled={isSystemModel}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </ButtonGroupItem>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex">
+                            <ButtonGroupItem
+                              variant="outline"
+                              onClick={() => setEditingModel(model)}
+                              disabled={isSystemModel}
+                              aria-label="Edit model"
+                            >
+                              <Pen className="h-3 w-3" />
+                            </ButtonGroupItem>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">
+                          <p>{modelEditTooltip(isSystemModel)}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="inline-flex">
+                            <ButtonGroupItem
+                              variant="outline"
+                              onClick={() => dispatch({ type: 'OPEN_DELETE_CONFIRM', modelId: model.id })}
+                              disabled={isSystemModel}
+                              aria-label="Remove model"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </ButtonGroupItem>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom">
+                          <p>{modelRemoveTooltip(isSystemModel)}</p>
+                        </TooltipContent>
+                      </Tooltip>
                     </ButtonGroup>
                   </div>
                 </div>
