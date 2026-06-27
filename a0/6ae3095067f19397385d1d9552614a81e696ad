@@ -1,0 +1,28 @@
+src/settings/models/index.tsx
+  s_0a668596c9d822::t_f4f08a6639b86b 353-354
+  s_0a668596c9d822::t_4f1beb530201c5 899-910
+src/settings/models/index.test.tsx
+  s_0a668596c9d822::t_fc027fe2f12e7f 81-84
+  s_0a668596c9d822::t_9d79870ed5c00c 14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "a06ae3095067f19397385d1d9552614a81e696ad",
+  "prompts": {},
+  "humans": {
+    "h_d30d732bb7c010": {
+      "author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  },
+  "sessions": {
+    "s_0a668596c9d822": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "fdec39af-0e6f-4d1a-959f-a56447748520",
+        "model": "default"
+      },
+      "human_author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  }
+}
