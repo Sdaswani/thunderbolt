@@ -264,6 +264,12 @@ const stampModelApiKeysFromLegacyReader = async (
  * Skips cleanly when the new DB doesn't have a `ps_crud` table — that's the
  * case in unit tests on bun-sqlite which doesn't initialise PowerSync's
  * internal schema.
+ *
+ * INTERNAL-SCHEMA COUPLING: reads/writes `ps_crud` and `ps_tx`, both private
+ * tables created by `@powersync/web`. Validated against `@powersync/web`
+ * 1.38.1 (`@powersync/common` 1.53.1). Verify the table names + `ps_tx.id = 1`
+ * single-row invariant + `next_tx` column still hold on upgrade — a rename
+ * here would not produce a TypeScript error.
  */
 const replacePsCrudFromLegacy = async (reader: LegacyReader, db: AnyDrizzleDatabase): Promise<number> => {
   const newCols = await fetchColumnNames(db, 'ps_crud')
