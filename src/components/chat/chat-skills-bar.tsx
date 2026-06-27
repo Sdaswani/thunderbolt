@@ -168,8 +168,8 @@ export const ChatSkillsBar = ({
                     aria-label="Pin a skill"
                     disabled={addDisabled}
                     className={`shrink-0 cursor-pointer rounded-full bg-card transition-opacity disabled:cursor-not-allowed disabled:opacity-40 ${
-                    openChipId ? 'opacity-40' : ''
-                  }`}
+                      openChipId ? 'opacity-40' : ''
+                    }`}
                   >
                     <Plus />
                   </Button>

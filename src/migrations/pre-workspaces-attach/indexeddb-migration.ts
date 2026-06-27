@@ -16,8 +16,13 @@
  * workspaces build may have generated its own keys before this migration ran
  * (e.g. user enabled E2EE on the new build first); those reflect what the BE
  * currently knows about this device and must win. Missing entries are copied
- * from the legacy DB. The legacy DB is deleted unconditionally at the end so
- * future boots short-circuit cleanly.
+ * from the legacy DB.
+ *
+ * The legacy `thunderbolt-keys` DB is **left in place indefinitely** so a
+ * rollback to the pre-Workspaces build finds the user's E2EE key material
+ * intact. The new build never opens it, so it costs a few KB of dead weight
+ * in IndexedDB. Same rollback-safety stance as the legacy SQLite file and
+ * localStorage keys (see `docs/workspaces-v1-data-migration-plan.md`).
  */
 
 const keyStoreObjectStoreName = 'keys'
@@ -41,9 +46,6 @@ export type IdbBackend = {
    * workspaces-build value wins.
    */
   writeKeyEntriesIfMissing: (dbName: string, entries: KeyEntry[]) => Promise<number>
-
-  /** Best-effort delete of `dbName`. Resolves even when the DB doesn't exist. */
-  deleteDatabase: (dbName: string) => Promise<void>
 }
 
 const newDbNameFor = (serverId: string): string => `thunderbolt-keys__${serverId}`
@@ -132,20 +134,6 @@ const browserIdbBackend: IdbBackend = {
       db.close()
     }
   },
-
-  deleteDatabase: (dbName) =>
-    new Promise((resolve) => {
-      if (!idbAvailable()) {
-        resolve()
-        return
-      }
-      const req = indexedDB.deleteDatabase(dbName)
-      req.onsuccess = () => resolve()
-      // Both error and blocked still resolve — best-effort cleanup; the legacy
-      // DB lingering is harmless (the workspaces build never reads it).
-      req.onerror = () => resolve()
-      req.onblocked = () => resolve()
-    }),
 }
 
 export type IndexedDbMigrationResult = {
@@ -167,10 +155,8 @@ export const migrateEncryptionKeysIfNeeded = async (
 ): Promise<IndexedDbMigrationResult> => {
   const entries = await backend.readKeyEntries(legacyDbName)
   if (entries.length === 0) {
-    await backend.deleteDatabase(legacyDbName)
     return { migrated: false, entryCount: 0 }
   }
   const written = await backend.writeKeyEntriesIfMissing(newDbNameFor(serverId), entries)
-  await backend.deleteDatabase(legacyDbName)
   return { migrated: written > 0, entryCount: written }
 }
