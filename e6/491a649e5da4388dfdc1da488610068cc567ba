@@ -1,0 +1,19 @@
+scripts/thunderdoctor.sh
+  s_0a668596c9d822::t_f6dc0945654d68 115
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "e6491a649e5da4388dfdc1da488610068cc567ba",
+  "prompts": {},
+  "sessions": {
+    "s_0a668596c9d822": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "fdec39af-0e6f-4d1a-959f-a56447748520",
+        "model": "default"
+      },
+      "human_author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  }
+}
