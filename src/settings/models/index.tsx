@@ -899,7 +899,7 @@ export default function ModelsPage() {
           <Tooltip>
             <TooltipTrigger asChild>
               <DialogTrigger asChild>
-                <Button variant="outline" size="icon" className="rounded-lg" aria-label="Add model">
+                <Button variant="outline" size="icon" className="rounded-lg" aria-label={modelAddTooltip()}>
                   <Plus />
                 </Button>
               </DialogTrigger>
@@ -1247,7 +1247,7 @@ export default function ModelsPage() {
                               variant="outline"
                               onClick={() => setEditingModel(model)}
                               disabled={isSystemModel}
-                              aria-label="Edit model"
+                              aria-label={modelEditTooltip(isSystemModel)}
                             >
                               <Pen className="h-3 w-3" />
                             </ButtonGroupItem>
@@ -1264,7 +1264,7 @@ export default function ModelsPage() {
                               variant="outline"
                               onClick={() => dispatch({ type: 'OPEN_DELETE_CONFIRM', modelId: model.id })}
                               disabled={isSystemModel}
-                              aria-label="Remove model"
+                              aria-label={modelRemoveTooltip(isSystemModel)}
                             >
                               <Trash2 className="h-3 w-3" />
                             </ButtonGroupItem>
