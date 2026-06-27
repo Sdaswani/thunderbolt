@@ -28,8 +28,10 @@ export type { LegacyBackend, LegacyReader } from './legacy-reader'
 export {
   isCompletionFlagSet,
   isDataCompletionFlagSet,
+  isGlobalCompletionFlagSet,
   setCompletionFlag,
   setDataCompletionFlag,
+  setGlobalCompletionFlag,
 } from './completion-flag'
 export { migrateLocalStorageIfNeeded } from './local-storage-migration'
 export type { LocalStorageMigrationResult } from './local-storage-migration'

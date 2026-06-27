@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it } from 'bun:test'
 import {
   isCompletionFlagSet,
   isDataCompletionFlagSet,
+  isGlobalCompletionFlagSet,
   setCompletionFlag,
   setDataCompletionFlag,
+  setGlobalCompletionFlag,
 } from './completion-flag'
 
 const serverA = '00000000-0000-0000-0000-00000000000a'
@@ -50,6 +52,39 @@ describe('pre-workspaces-attach completion flag', () => {
     // mistaken for completion. Without this the migration could silently skip.
     localStorage.setItem(`pre_workspaces_attach_completed__${serverA}`, 'true')
     expect(isCompletionFlagSet(serverA)).toBe(false)
+  })
+})
+
+describe('pre-workspaces-attach global completion flag', () => {
+  afterEach(() => {
+    localStorage.clear()
+  })
+
+  it('returns false when the global flag is unset', () => {
+    expect(isGlobalCompletionFlagSet()).toBe(false)
+  })
+
+  it('returns true after setGlobalCompletionFlag is called', () => {
+    setGlobalCompletionFlag()
+    expect(isGlobalCompletionFlagSet()).toBe(true)
+  })
+
+  it('writes the un-namespaced localStorage key (no serverId suffix)', () => {
+    setGlobalCompletionFlag()
+    expect(localStorage.getItem('pre_workspaces_attach_completed')).toBe('1')
+  })
+
+  it('is independent of any per-server flag', () => {
+    // A set per-server flag must not satisfy the global gate, otherwise the
+    // device-wide "legacy consumed" invariant is bypassed via a per-server
+    // upgrade running before the device-global one ever fired.
+    setCompletionFlag(serverA)
+    expect(isGlobalCompletionFlagSet()).toBe(false)
+  })
+
+  it('does not treat unrelated values as set', () => {
+    localStorage.setItem('pre_workspaces_attach_completed', 'true')
+    expect(isGlobalCompletionFlagSet()).toBe(false)
   })
 })
 

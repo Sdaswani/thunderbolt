@@ -20,14 +20,20 @@ Implementation lives in `src/migrations/pre-workspaces-attach/`.
   `needsWorkspaceId` / `needsScope` stamping flags.
 - `legacy-db-path.ts` — locates `thunderbolt-sync.db` (fallback
   `thunderbolt.db`) in OPFS, the only filesystem wa-sqlite reads from.
-- `completion-flag.ts` — per-device, per-server localStorage flags.
+- `completion-flag.ts` — per-device localStorage flags.
+  `pre_workspaces_attach_completed` is device-global (no serverId): once set,
+  EVERY step of the migration short-circuits on subsequent boots regardless of
+  which server the user signs into. Without it, a user with cloud accounts on
+  server A and server B would re-import the device-global legacy
+  `thunderbolt-sync.db` into both workspaces, bleeding A's rows into B.
   `pre_workspaces_attach_data_completed__<serverId>` lands the instant the
   destructive table-copy + `ps_crud` replacement succeed, so a partial-failure
   retry doesn't re-run the queue wipe and clobber interim writes.
   `pre_workspaces_attach_completed__<serverId>` lands after every step
-  (including the api-key stamp); later boots short-circuit on it. localStorage
-  rather than the synced `settings` table so the flags stay device-local and
-  can't race a second device's first-time migration.
+  (including the api-key stamp); later boots for the SAME server short-circuit
+  on it even when the global flag isn't yet set. localStorage rather than the
+  synced `settings` table so the flags stay device-local and can't race a
+  second device's first-time migration.
 
 ## Removal (once every active install has migrated)
 

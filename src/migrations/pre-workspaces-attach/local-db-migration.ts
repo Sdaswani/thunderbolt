@@ -37,8 +37,10 @@ import { modelsTable } from '@/db/tables'
 import {
   isCompletionFlagSet,
   isDataCompletionFlagSet,
+  isGlobalCompletionFlagSet,
   setCompletionFlag,
   setDataCompletionFlag,
+  setGlobalCompletionFlag,
 } from './completion-flag'
 import type { LegacyBackend, LegacyReader } from './legacy-reader'
 import { openLegacyReader as defaultOpenLegacyReader } from './legacy-reader'
@@ -91,27 +93,38 @@ const countRows = async (db: AnyDrizzleDatabase, tableName: string): Promise<num
   return 0
 }
 
+type CopyTableOutcome = {
+  /** Net new rows in the table (after - before). */
+  persisted: number
+  /** Rows the migration attempted to insert (excludes "nothing to copy" cases). */
+  attempted: number
+  /** Rows that threw inside the INSERT OR IGNORE statement (catch-block hits). */
+  drops: number
+}
+
+const emptyOutcome: CopyTableOutcome = { persisted: 0, attempted: 0, drops: 0 }
+
 const copyTableViaReader = async (
   reader: LegacyReader,
   db: AnyDrizzleDatabase,
   table: LegacyTable,
   personalWorkspaceId: string,
-): Promise<number> => {
+): Promise<CopyTableOutcome> => {
   if (!(await reader.hasTable(table.name))) {
-    return 0
+    return emptyOutcome
   }
   const legacyCols = await reader.columnNames(table.name)
   if (legacyCols.length === 0) {
-    return 0
+    return emptyOutcome
   }
   const newCols = await fetchColumnNames(db, table.name)
   if (newCols.length === 0) {
-    return 0
+    return emptyOutcome
   }
   const newColsSet = new Set(newCols)
   const sharedCols = legacyCols.filter((c) => newColsSet.has(c))
   if (sharedCols.length === 0) {
-    return 0
+    return emptyOutcome
   }
 
   // Build the column list inserted per row: shared columns first (positionally
@@ -130,7 +143,7 @@ const copyTableViaReader = async (
 
   const rows = await reader.selectAll(table.name)
   if (rows.length === 0) {
-    return 0
+    return emptyOutcome
   }
 
   // Cache the index of each shared column in the legacy row tuple so the
@@ -152,6 +165,7 @@ const copyTableViaReader = async (
   // killing the rest of the table's progress; INSERT OR IGNORE already
   // handles the common conflict case silently.
   const before = await countRows(db, table.name)
+  let drops = 0
   await db.transaction(async (tx) => {
     for (const row of rows) {
       const values: unknown[] = sharedColIndices.map((i) => row[i])
@@ -169,12 +183,13 @@ const copyTableViaReader = async (
         // production with no signal beyond a count mismatch. The catch itself
         // is intentional (see block comment above): one malformed row must
         // not kill the rest of the table's progress.
+        drops += 1
         console.warn(`[pre-workspaces-attach] dropping row from "${table.name}":`, err)
       }
     }
   })
   const after = await countRows(db, table.name)
-  return Math.max(0, after - before)
+  return { persisted: Math.max(0, after - before), attempted: rows.length, drops }
 }
 
 /**
@@ -286,6 +301,13 @@ const replacePsCrudFromLegacy = async (reader: LegacyReader, db: AnyDrizzleDatab
   const newColsSet = new Set(newCols)
   const sharedCols = legacyCols.filter((c) => newColsSet.has(c))
   if (sharedCols.length === 0) {
+    // Legacy / new `ps_crud` schemas share no columns (the table shape drifted
+    // across PowerSync versions). We still MUST wipe the queue — the data-copy
+    // step above has just churned it with re-uploads of rows the BE already
+    // owns, and leaving them in place means sync-enabled users re-upload every
+    // migrated row on first connect. Skipping the legacy queue import here is
+    // the lesser harm; the BE's workspace-scoped handler tolerates re-uploads.
+    await db.run(sql.raw(`DELETE FROM ps_crud`))
     return 0
   }
   const sharedColIndices = sharedCols.map((c) => legacyCols.indexOf(c))
@@ -386,10 +408,24 @@ export const runLocalDbMigration = async ({
     return emptyResult(0)
   }
 
+  // Differentiate "this server already consumed the legacy state" (had a
+  // partial-failure boot and still owes the idempotent api-key stamp) from
+  // "another server consumed it" (this server must stay out — would bleed
+  // account A's local rows into account B's workspace). Only the latter
+  // short-circuits.
+  const thisServerConsumed = isDataCompletionFlagSet(serverId)
+  if (isGlobalCompletionFlagSet() && !thisServerConsumed) {
+    setCompletionFlag(serverId)
+    return emptyResult(0)
+  }
+
   if (!legacyDb) {
-    // No legacy file on disk — flag complete so we don't re-probe every boot.
+    // No legacy file on disk — flag both per-server and global so we don't
+    // re-probe every boot or risk a transient probe failure on the SAME
+    // server triggering an unwanted re-run.
     setDataCompletionFlag(serverId)
     setCompletionFlag(serverId)
+    setGlobalCompletionFlag()
     return emptyResult(performance.now() - startedAt)
   }
 
@@ -405,9 +441,24 @@ export const runLocalDbMigration = async ({
     // Gated on `data_completion` so a partial-failure retry — where the api-key
     // stamp below threw on the previous boot — doesn't re-run the queue wipe
     // and clobber rows the user authored in the failed-state interim.
-    if (!isDataCompletionFlagSet(serverId)) {
+    if (!thisServerConsumed) {
+      const totalFailures: string[] = []
       for (const table of allLegacyTables) {
-        rowsInsertedByTable[table.name] = await copyTableViaReader(reader, newDb, table, personalWorkspaceId)
+        const outcome = await copyTableViaReader(reader, newDb, table, personalWorkspaceId)
+        rowsInsertedByTable[table.name] = outcome.persisted
+        // Systematic failure: rows existed in legacy, every attempt threw, none
+        // persisted. Distinguishes a real bug (schema drift, type mismatch) from
+        // the legitimate "all conflicts" case (rows already synced down from BE).
+        // Refuse the flag so the next boot retries — silently marking complete
+        // here would orphan the entire table's worth of legacy data.
+        if (outcome.attempted > 0 && outcome.drops === outcome.attempted && outcome.persisted === 0) {
+          totalFailures.push(`${table.name} (${outcome.attempted} rows, all dropped)`)
+        }
+      }
+      if (totalFailures.length > 0) {
+        throw new Error(
+          `pre-Workspaces local DB migration: every insert dropped for ${totalFailures.join(', ')} — refusing to mark complete so the next boot retries`,
+        )
       }
       // Replace the new DB's `ps_crud` with the legacy queue. Drops the entries
       // our data-copy step just generated (already on the BE for sync-enabled
@@ -416,10 +467,13 @@ export const runLocalDbMigration = async ({
       // `ps_crud` entries that *do* need to upload, and any wipe afterward
       // would lose them.
       legacyPsCrudCopied = await replacePsCrudFromLegacy(reader, newDb)
-      // Pin the data-completion flag the instant the destructive part lands so
-      // any later throw in this run still leaves the next boot skipping the
-      // queue replacement.
+      // Pin BOTH data-completion (per-server) and global flags the instant the
+      // destructive part lands. The global flag must be here, not at the end —
+      // otherwise an api-key stamp failure below would leave the device-global
+      // legacy state unflagged-as-consumed, and signing into a DIFFERENT
+      // server would re-import it into the other account's workspace (bleed).
       setDataCompletionFlag(serverId)
+      setGlobalCompletionFlag()
     }
     // Must run AFTER `models` has been copied (PK lookup on new `models`
     // rows) and AFTER the ps_crud replacement (otherwise its writes would

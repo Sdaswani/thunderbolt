@@ -16,7 +16,11 @@ import { isSsoMode } from '@/lib/auth-mode'
 import { createAuthenticatedClient } from '@/lib/http'
 import { beginInitRun, getInitTimingPayload, recordInitStep } from '@/lib/init-timing'
 import { getDatabasePath, getDatabaseType, getPlatform, isIndexedDbAvailable } from '@/lib/platform'
-import { migrateEncryptionKeysIfNeeded, migrateLocalStorageIfNeeded } from '@/migrations/pre-workspaces-attach'
+import {
+  isGlobalCompletionFlagSet,
+  migrateEncryptionKeysIfNeeded,
+  migrateLocalStorageIfNeeded,
+} from '@/migrations/pre-workspaces-attach'
 import { initPosthog, trackError, trackEvent } from '@/lib/posthog'
 import { resolveBootTrustDomain } from '@/lib/resolve-boot-trust-domain'
 import { TrayManager } from '@/lib/tray'
@@ -169,19 +173,29 @@ const executeInitializationSteps = async (httpClient?: HttpClient): Promise<Hand
   // time HTTP client / Better Auth read them. Telemetry is deferred to after the
   // PostHog init below — `trackEvent` no-ops before the client exists, and this
   // is exactly the cohort we most want telemetry from.
+  //
+  // Both steps are gated on the device-global completion flag: once ANY server
+  // has consumed the legacy state, neither step has anything legitimate to do
+  // (legacy keys are deleted after the first migration), and skipping avoids
+  // the wasted localStorage/IDB round-trips on every subsequent boot.
   const migrationServerId = resolution.serverEntry.serverId
-  const storageMigration = migrateLocalStorageIfNeeded(migrationServerId)
+  const migrationAlreadyCompleted = isGlobalCompletionFlagSet()
+  const storageMigration = migrationAlreadyCompleted
+    ? { migratedToken: false, migratedDeviceId: false }
+    : migrateLocalStorageIfNeeded(migrationServerId)
   // Step 2 (async) — encryption keys. Wrapped in try/catch so a failure here
   // never blocks app boot; users hit re-enrolment via the standard E2EE setup
   // flow if their keys can't be migrated, which is preferable to a hard error
   // screen during the rollout window.
   let keyMigration: { migrated: boolean; entryCount: number } | null = null
   let keyMigrationError: unknown = null
-  try {
-    keyMigration = await migrateEncryptionKeysIfNeeded(migrationServerId)
-  } catch (error) {
-    console.error('Failed to migrate pre-Workspaces encryption keys:', error)
-    keyMigrationError = error
+  if (!migrationAlreadyCompleted) {
+    try {
+      keyMigration = await migrateEncryptionKeysIfNeeded(migrationServerId)
+    } catch (error) {
+      console.error('Failed to migrate pre-Workspaces encryption keys:', error)
+      keyMigrationError = error
+    }
   }
 
   // Background refresh of /v1/config for returning server-mode boots — keeps cached UI flags
