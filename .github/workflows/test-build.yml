@@ -48,24 +48,30 @@ jobs:
         run: |
           bun install --frozen-lockfile
 
+          # Test builds do not ship to the auto-updater, so skip updater-artifact
+          # signing. Otherwise Tauri requires TAURI_SIGNING_PRIVATE_KEY (which
+          # only desktop-release.yml wires up) and the whole job fails after the
+          # installers are already built.
+          NO_UPDATER='{"bundle":{"createUpdaterArtifacts":false}}'
+
           case "$INPUT_PLATFORM" in
             "linux")
-              bun tauri build
+              bun tauri build --config "$NO_UPDATER"
               ;;
             "windows-x64")
-              bun tauri build --bundles msi,nsis --target x86_64-pc-windows-msvc
+              bun tauri build --bundles msi,nsis --target x86_64-pc-windows-msvc --config "$NO_UPDATER"
               ;;
             "windows-arm")
               rustup target add aarch64-pc-windows-msvc
-              bun tauri build --bundles msi,nsis --target aarch64-pc-windows-msvc
+              bun tauri build --bundles msi,nsis --target aarch64-pc-windows-msvc --config "$NO_UPDATER"
               ;;
             "macos-silicon")
-              bun tauri build --bundles app,dmg --target aarch64-apple-darwin
+              bun tauri build --bundles app,dmg --target aarch64-apple-darwin --config "$NO_UPDATER"
               ;;
             "macos-intel")
               rustup target add x86_64-apple-darwin
               rm -rf src-tauri/target/x86_64-apple-darwin
-              bun tauri build --bundles app,dmg --target x86_64-apple-darwin
+              bun tauri build --bundles app,dmg --target x86_64-apple-darwin --config "$NO_UPDATER"
               ;;
           esac
         shell: bash
@@ -86,6 +92,14 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.platform }}-build
+          # actions/upload-artifact does not expand brace patterns, so list
+          # each extension on its own line.
           path: |
-            src-tauri/target/*/release/bundle/**/*.{deb,AppImage,rpm,msi,exe,dmg,app.tar.gz}
+            src-tauri/target/*/release/bundle/**/*.deb
+            src-tauri/target/*/release/bundle/**/*.AppImage
+            src-tauri/target/*/release/bundle/**/*.rpm
+            src-tauri/target/*/release/bundle/**/*.msi
+            src-tauri/target/*/release/bundle/**/*.exe
+            src-tauri/target/*/release/bundle/**/*.dmg
+            src-tauri/target/*/release/bundle/**/*.app.tar.gz
           retention-days: 7
