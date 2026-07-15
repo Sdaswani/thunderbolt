@@ -1,0 +1,30 @@
+src/skills/skills-list.tsx
+  s_0a668596c9d822::t_7508a1a53507f4 82-97
+  s_0a668596c9d822::t_e36f005bb0da18 12
+src/settings/mcp-servers.tsx
+  s_0a668596c9d822::t_112538cb47bb3e 729-740
+src/routes/settings/agents/index.tsx
+  s_0a668596c9d822::t_8b4babeb8176e9 11
+  s_0a668596c9d822::t_62b280aa2011c4 124-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.14",
+  "base_commit_sha": "980445c1f92241a56f7761e0ddc1bf4f247c7b6d",
+  "prompts": {},
+  "humans": {
+    "h_d30d732bb7c010": {
+      "author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  },
+  "sessions": {
+    "s_0a668596c9d822": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "fdec39af-0e6f-4d1a-959f-a56447748520",
+        "model": "default"
+      },
+      "human_author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  }
+}
