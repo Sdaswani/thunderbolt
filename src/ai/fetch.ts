@@ -12,6 +12,7 @@ import {
   isFinalStep,
   shouldRetry,
 } from '@/ai/step-logic'
+import { isThinkingDisabledForSend } from '@/ai/thinking-session'
 import { getAllSkills, getIntegrationStatus, getModel, getModelProfile, getSettings } from '@/dal'
 import { getMessage } from '@/dal/chat-messages'
 import { isWidgetSkillId } from '@/defaults/skills'
@@ -195,6 +196,9 @@ type AiFetchStreamingResponseOptions = {
    *  `ProxyFetchProvider` (`useProxyFetchGetter()`); non-React callers (eval
    *  scripts) build a `proxyFetch` directly and wrap it in `() => fn`. */
   getProxyFetch: () => FetchFn
+  /** Per-conversation Thinking chip override. `false` disables thinking for
+   *  models that advertise it; omit/`true` keeps the model default. */
+  thinkingEnabled?: boolean
 }
 
 /**
@@ -677,6 +681,7 @@ export const aiFetchStreamingResponse = async ({
   reconnectClient,
   httpClient,
   getProxyFetch,
+  thinkingEnabled,
 }: AiFetchStreamingResponseOptions) => {
   const options = init as RequestInit & { body: string }
   const body = JSON.parse(options.body)
@@ -688,13 +693,15 @@ export const aiFetchStreamingResponse = async ({
   // reach this function the user turn is already persisted.
 
   const db = getDb()
-  const { model, profile, supportsTools, sourceCollector, toolset, skills, mcpToolsMetadata, systemPrompt } =
-    await prepareAiRequestConfig({
-      modelId,
-      mcpClients,
-      reconnectClient,
-      httpClient,
-    })
+  const prepared = await prepareAiRequestConfig({
+    modelId,
+    mcpClients,
+    reconnectClient,
+    httpClient,
+  })
+  const thinkingDisabled = isThinkingDisabledForSend(prepared.model, thinkingEnabled)
+  const model = thinkingDisabled ? { ...prepared.model, startWithReasoning: 0 as const } : prepared.model
+  const { profile, supportsTools, sourceCollector, toolset, skills, mcpToolsMetadata, systemPrompt } = prepared
   if (!supportsTools) {
     console.log('Model does not support tools, skipping tool setup')
   }
@@ -732,6 +739,8 @@ export const aiFetchStreamingResponse = async ({
       // rather than relying solely on the profile — custom OpenAI models may not have a profile.
       ...(model.vendor === 'openai' && { systemMessageMode: 'developer' as const }),
       ...profile?.providerOptions,
+      // Thinking chip off → ask OpenAI-compat endpoints (incl. Ollama) for no reasoning.
+      ...(thinkingDisabled && { reasoningEffort: 'none' as const }),
     }
     const providerOptions = Object.keys(rawOptions).length > 0 ? { [providerOptionsKey]: rawOptions } : undefined
 
