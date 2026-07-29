@@ -7,6 +7,8 @@ import {
   contextLengthFromModelInfo,
   isLikelyOllamaBaseUrl,
   mapOllamaTagToAvailableModel,
+  ollamaTagModelSchema,
+  ollamaTagsResponseSchema,
   resolveOllamaOrigin,
 } from './ollama-catalog'
 
@@ -35,10 +37,41 @@ describe('isLikelyOllamaBaseUrl', () => {
     expect(isLikelyOllamaBaseUrl('http://ollama.local/v1')).toBe(true)
   })
 
-  it('rejects unrelated custom endpoints', () => {
+  it('rejects unrelated custom endpoints (no probe)', () => {
     expect(isLikelyOllamaBaseUrl('http://localhost:1234/v1')).toBe(false)
     expect(isLikelyOllamaBaseUrl('https://api.openai.com/v1')).toBe(false)
     expect(isLikelyOllamaBaseUrl(undefined)).toBe(false)
+  })
+
+  it('does not match Ollama on an uncommon port without ollama in the host', () => {
+    // Deliberate heuristic gap: still works via /v1/models, just without rich caps.
+    expect(isLikelyOllamaBaseUrl('http://localhost:11435/v1')).toBe(false)
+  })
+})
+
+describe('ollamaTagsResponseSchema', () => {
+  it('accepts a well-formed /api/tags payload', () => {
+    const parsed = ollamaTagsResponseSchema.safeParse({
+      models: [
+        {
+          name: 'qwen3:1.7b',
+          details: { context_length: 40_960 },
+          capabilities: ['completion', 'tools', 'thinking'],
+        },
+      ],
+    })
+    expect(parsed.success).toBe(true)
+  })
+
+  it('rejects a missing models array', () => {
+    expect(ollamaTagsResponseSchema.safeParse({}).success).toBe(false)
+    expect(ollamaTagsResponseSchema.safeParse({ models: 'nope' }).success).toBe(false)
+  })
+})
+
+describe('ollamaTagModelSchema', () => {
+  it('rejects entries without a name', () => {
+    expect(ollamaTagModelSchema.safeParse({ capabilities: ['tools'] }).success).toBe(false)
   })
 })
 

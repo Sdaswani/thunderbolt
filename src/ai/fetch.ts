@@ -12,7 +12,7 @@ import {
   isFinalStep,
   shouldRetry,
 } from '@/ai/step-logic'
-import { isThinkingDisabledForSend } from '@/ai/thinking-session'
+import { isThinkingDisabledForSend, withThinkingDisabledForSend } from '@/ai/thinking-session'
 import { getAllSkills, getIntegrationStatus, getModel, getModelProfile, getSettings } from '@/dal'
 import { getMessage } from '@/dal/chat-messages'
 import { isWidgetSkillId } from '@/defaults/skills'
@@ -700,7 +700,7 @@ export const aiFetchStreamingResponse = async ({
     httpClient,
   })
   const thinkingDisabled = isThinkingDisabledForSend(prepared.model, thinkingEnabled)
-  const model = thinkingDisabled ? { ...prepared.model, startWithReasoning: 0 as const } : prepared.model
+  const model = withThinkingDisabledForSend(prepared.model, thinkingEnabled)
   const { profile, supportsTools, sourceCollector, toolset, skills, mcpToolsMetadata, systemPrompt } = prepared
   if (!supportsTools) {
     console.log('Model does not support tools, skipping tool setup')
