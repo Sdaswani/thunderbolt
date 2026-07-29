@@ -4,7 +4,6 @@
 
 import { describe, expect, it } from 'bun:test'
 import {
-  contextLengthFromModelInfo,
   isLikelyOllamaBaseUrl,
   mapOllamaTagToAvailableModel,
   ollamaTagModelSchema,
@@ -112,17 +111,5 @@ describe('mapOllamaTagToAvailableModel', () => {
     expect(mapped.supports_vision).toBe(true)
     expect(mapped.supports_tools).toBe(false)
     expect(mapped.context_window).toBeNull()
-  })
-})
-
-describe('contextLengthFromModelInfo', () => {
-  it('reads architecture-prefixed context_length keys', () => {
-    expect(contextLengthFromModelInfo({ 'qwen2.context_length': 32_768, 'general.architecture': 'qwen2' })).toBe(32_768)
-    expect(contextLengthFromModelInfo({ 'llama.context_length': 8192 })).toBe(8192)
-  })
-
-  it('returns null when absent', () => {
-    expect(contextLengthFromModelInfo(undefined)).toBeNull()
-    expect(contextLengthFromModelInfo({ 'general.architecture': 'qwen2' })).toBeNull()
   })
 })

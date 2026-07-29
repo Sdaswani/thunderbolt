@@ -4,9 +4,6 @@
 
 import type { Model } from '@/types'
 
-/** SQLite / Drizzle flag: reasoning off for this request only. */
-const REASONING_OFF = 0
-
 /**
  * True when the selected model advertises thinking and the conversation chip
  * has turned it off for this send.
@@ -28,7 +25,7 @@ export const withThinkingDisabledForSend = <T extends Pick<Model, 'startWithReas
   if (!isThinkingDisabledForSend(model, thinkingEnabled)) {
     return model
   }
-  return { ...model, startWithReasoning: REASONING_OFF }
+  return { ...model, startWithReasoning: 0 }
 }
 
 /**

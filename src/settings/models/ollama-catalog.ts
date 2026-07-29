@@ -9,7 +9,7 @@ import { http } from '@/lib/http'
 import { normalizeOpenAiBaseUrl } from '@/lib/openai-base-url'
 import type { AvailableModel } from './model-catalog'
 
-/** One row from Ollama `GET /api/tags` (validated). */
+/** One row from Ollama `GET /api/tags` (validated per entry). */
 export const ollamaTagModelSchema = z.object({
   name: z.string().min(1),
   model: z.string().optional(),
@@ -26,14 +26,12 @@ export const ollamaTagModelSchema = z.object({
 export type OllamaTagModel = z.infer<typeof ollamaTagModelSchema>
 
 /**
- * Wire shape for `GET /api/tags`. Invalid / non-Ollama JSON fails parse so
- * callers fall back to sparse OpenAI-compat `/v1/models`.
+ * Envelope for `GET /api/tags`. Entries stay `unknown` so one malformed tag
+ * can be skipped without failing the whole catalog.
  */
 export const ollamaTagsResponseSchema = z.object({
-  models: z.array(ollamaTagModelSchema),
+  models: z.array(z.unknown()),
 })
-
-export type OllamaTagsResponse = z.infer<typeof ollamaTagsResponseSchema>
 
 /**
  * Strips the OpenAI-compat `/v1` suffix so native Ollama routes
@@ -76,19 +74,6 @@ export const isLikelyOllamaBaseUrl = (url: string | undefined): boolean => {
   }
 }
 
-/** Reads `*.context_length` from Ollama `model_info` (architecture-prefixed keys). */
-export const contextLengthFromModelInfo = (modelInfo: Record<string, unknown> | undefined): number | null => {
-  if (!modelInfo) {
-    return null
-  }
-  for (const [key, value] of Object.entries(modelInfo)) {
-    if (key.endsWith('.context_length') && typeof value === 'number' && Number.isFinite(value) && value > 0) {
-      return value
-    }
-  }
-  return null
-}
-
 /** Maps Ollama capability strings + detail fields onto Thunderbolt catalog fields. */
 export const mapOllamaTagToAvailableModel = (tag: OllamaTagModel): AvailableModel => {
   const capabilities = new Set((tag.capabilities ?? []).map((capability) => capability.toLowerCase()))
@@ -115,7 +100,7 @@ export const mapOllamaTagToAvailableModel = (tag: OllamaTagModel): AvailableMode
 export const fetchOllamaTagsCatalog = async (origin: string): Promise<AvailableModel[] | null> => {
   try {
     const raw: unknown = await http.get(`${origin}/api/tags`, { fetch }).json<unknown>()
-    const envelope = z.object({ models: z.array(z.unknown()) }).safeParse(raw)
+    const envelope = ollamaTagsResponseSchema.safeParse(raw)
     if (!envelope.success) {
       console.error('Ollama /api/tags response failed schema validation:', envelope.error)
       return null

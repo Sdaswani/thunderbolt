@@ -153,9 +153,9 @@ describe('useAddModelForm', () => {
               capabilities: ['completion', 'tools', 'thinking'],
             },
           ],
-        }) as never
+        })
       }
-      return stubJsonResponse({ data: [] }) as never
+      return stubJsonResponse({ data: [] })
     })
     const onClose = mock(() => {})
     const { result } = renderHook(() => useAddModelForm({ isOpen: true, onClose }), {

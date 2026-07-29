@@ -286,6 +286,7 @@ export const withThinkingSessionOverride = (
   }
   if (resolved.descriptor.kind === 'openai-compat') {
     return {
+      ...resolved,
       descriptor: { ...resolved.descriptor, reasoning: false },
       thinkingLevel: 'off',
     }

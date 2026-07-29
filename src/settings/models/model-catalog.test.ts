@@ -78,7 +78,7 @@ describe('fetchModelsForProvider Ollama path', () => {
               capabilities: ['completion', 'tools'],
             },
           ],
-        }) as never
+        })
       }
       throw new Error(`unexpected catalog URL: ${url}`)
     })
@@ -109,7 +109,7 @@ describe('fetchModelsForProvider Ollama path', () => {
       if (String(url).includes('/api/tags')) {
         throw new Error('connection refused')
       }
-      return stubJsonResponse({ data: [{ id: 'fallback-model' }] }) as never
+      return stubJsonResponse({ data: [{ id: 'fallback-model' }] })
     })
 
     try {
@@ -128,9 +128,9 @@ describe('fetchModelsForProvider Ollama path', () => {
   it('falls back to /v1/models when /api/tags returns a non-Ollama body', async () => {
     const getSpy = spyOn(http, 'get').mockImplementation((url: string) => {
       if (String(url).includes('/api/tags')) {
-        return stubJsonResponse({ status: 'ok' }) as never
+        return stubJsonResponse({ status: 'ok' })
       }
-      return stubJsonResponse({ data: [{ id: 'openai-compat-model' }] }) as never
+      return stubJsonResponse({ data: [{ id: 'openai-compat-model' }] })
     })
 
     try {
