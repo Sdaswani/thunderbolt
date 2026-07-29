@@ -1,0 +1,24 @@
+src/settings/models/ollama-catalog.ts
+  s_deb79165c1e6b3::t_0962e6b96f19cf 37-39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "0ca2a34ac505c4397370873258d272f65c048585",
+  "prompts": {},
+  "humans": {
+    "h_d30d732bb7c010": {
+      "author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  },
+  "sessions": {
+    "s_deb79165c1e6b3": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "e92d34b6-c1bd-45a2-b175-b630c77f177f",
+        "model": "grok-4.5"
+      },
+      "human_author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  }
+}
