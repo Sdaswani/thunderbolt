@@ -34,9 +34,9 @@ export const ollamaTagsResponseSchema = z.object({
 })
 
 /**
- * Strips the OpenAI-compat `/v1` suffix so native Ollama routes
- * (`/api/tags`, `/api/show`, `/api/version`) resolve against the same origin
- * the user typed into the Custom URL field.
+ * Strips the OpenAI-compat `/v1` suffix so the native Ollama `/api/tags`
+ * route resolves against the same origin the user typed into the Custom URL
+ * field.
  */
 export const resolveOllamaOrigin = (openAiCompatibleUrl: string): string | null => {
   try {
