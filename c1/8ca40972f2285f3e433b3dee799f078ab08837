@@ -1,0 +1,32 @@
+src/settings/models/model-catalog.test.ts
+  s_deb79165c1e6b3::t_60b77763257382 81,112,131,133
+src/settings/models/ollama-catalog.ts
+  s_deb79165c1e6b3::t_85bdf76ca44a6b 12,29-30,33,103
+src/settings/models/use-add-model-form.test.tsx
+  s_deb79165c1e6b3::t_2db9ecca4e9b0d 156,158
+src/ai/thinking-session.ts
+  s_deb79165c1e6b3::t_50e6ab39c15d27 28
+src/acp/built-in-adapter.ts
+  s_deb79165c1e6b3::t_88131e7c7a1ce9 289
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "c18ca40972f2285f3e433b3dee799f078ab08837",
+  "prompts": {},
+  "humans": {
+    "h_d30d732bb7c010": {
+      "author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  },
+  "sessions": {
+    "s_deb79165c1e6b3": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "e92d34b6-c1bd-45a2-b175-b630c77f177f",
+        "model": "grok-4.5"
+      },
+      "human_author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  }
+}
