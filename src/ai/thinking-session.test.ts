@@ -3,7 +3,11 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { describe, expect, it } from 'bun:test'
-import { isThinkingDisabledForSend, withThinkingDisabledForSend } from './thinking-session'
+import {
+  isThinkingDisabledForSend,
+  openaiCompatThinkingProviderOptions,
+  withThinkingDisabledForSend,
+} from './thinking-session'
 
 describe('isThinkingDisabledForSend', () => {
   it('is true only for thinking-capable models with the chip off', () => {
@@ -27,5 +31,15 @@ describe('withThinkingDisabledForSend', () => {
     expect(next).not.toBe(model)
     expect(next).toEqual({ startWithReasoning: 0, name: 'qwen' })
     expect(model.startWithReasoning).toBe(1)
+  })
+})
+
+describe('openaiCompatThinkingProviderOptions', () => {
+  it('requests reasoningEffort none when the chip disabled thinking', () => {
+    expect(openaiCompatThinkingProviderOptions(true)).toEqual({ reasoningEffort: 'none' })
+  })
+
+  it('adds no provider options when thinking stays on', () => {
+    expect(openaiCompatThinkingProviderOptions(false)).toEqual({})
   })
 })

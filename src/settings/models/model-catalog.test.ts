@@ -104,21 +104,41 @@ describe('fetchModelsForProvider Ollama path', () => {
     }
   })
 
-  it('falls back to /v1/models when the Custom URL is not Ollama-like', async () => {
+  it('falls back to /v1/models when /api/tags fails for an Ollama-like URL', async () => {
     const getSpy = spyOn(http, 'get').mockImplementation((url: string) => {
       if (String(url).includes('/api/tags')) {
-        throw new Error('should not probe Ollama tags for llama.cpp')
+        throw new Error('connection refused')
       }
-      return stubJsonResponse({ data: [{ id: 'local-model' }] }) as never
+      return stubJsonResponse({ data: [{ id: 'fallback-model' }] }) as never
     })
 
     try {
       const models = await fetchModelsForProvider({
         provider: 'custom',
-        url: 'http://localhost:1234/v1',
+        url: 'http://localhost:11434/v1',
       })
-      expect(models.map((model) => model.id)).toEqual(['local-model'])
+      expect(models.map((model) => model.id)).toEqual(['fallback-model'])
+      expect(getSpy.mock.calls.some((call) => String(call[0]).endsWith('/api/tags'))).toBe(true)
       expect(getSpy.mock.calls.some((call) => String(call[0]).includes('/v1/models'))).toBe(true)
+    } finally {
+      getSpy.mockRestore()
+    }
+  })
+
+  it('falls back to /v1/models when /api/tags returns a non-Ollama body', async () => {
+    const getSpy = spyOn(http, 'get').mockImplementation((url: string) => {
+      if (String(url).includes('/api/tags')) {
+        return stubJsonResponse({ status: 'ok' }) as never
+      }
+      return stubJsonResponse({ data: [{ id: 'openai-compat-model' }] }) as never
+    })
+
+    try {
+      const models = await fetchModelsForProvider({
+        provider: 'custom',
+        url: 'http://ollama:11434/v1',
+      })
+      expect(models.map((model) => model.id)).toEqual(['openai-compat-model'])
     } finally {
       getSpy.mockRestore()
     }

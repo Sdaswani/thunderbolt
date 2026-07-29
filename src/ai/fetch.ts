@@ -12,7 +12,11 @@ import {
   isFinalStep,
   shouldRetry,
 } from '@/ai/step-logic'
-import { isThinkingDisabledForSend, withThinkingDisabledForSend } from '@/ai/thinking-session'
+import {
+  isThinkingDisabledForSend,
+  openaiCompatThinkingProviderOptions,
+  withThinkingDisabledForSend,
+} from '@/ai/thinking-session'
 import { getAllSkills, getIntegrationStatus, getModel, getModelProfile, getSettings } from '@/dal'
 import { getMessage } from '@/dal/chat-messages'
 import { isWidgetSkillId } from '@/defaults/skills'
@@ -740,7 +744,7 @@ export const aiFetchStreamingResponse = async ({
       ...(model.vendor === 'openai' && { systemMessageMode: 'developer' as const }),
       ...profile?.providerOptions,
       // Thinking chip off → ask OpenAI-compat endpoints (incl. Ollama) for no reasoning.
-      ...(thinkingDisabled && { reasoningEffort: 'none' as const }),
+      ...openaiCompatThinkingProviderOptions(thinkingDisabled),
     }
     const providerOptions = Object.keys(rawOptions).length > 0 ? { [providerOptionsKey]: rawOptions } : undefined
 

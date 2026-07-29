@@ -30,3 +30,11 @@ export const withThinkingDisabledForSend = <T extends Pick<Model, 'startWithReas
   }
   return { ...model, startWithReasoning: REASONING_OFF }
 }
+
+/**
+ * OpenAI-compat provider options for the Thinking chip. Chip off asks the
+ * endpoint (incl. Ollama) for no reasoning effort on this send.
+ */
+export const openaiCompatThinkingProviderOptions = (
+  thinkingDisabled: boolean,
+): { reasoningEffort: 'none' } | Record<string, never> => (thinkingDisabled ? { reasoningEffort: 'none' } : {})
