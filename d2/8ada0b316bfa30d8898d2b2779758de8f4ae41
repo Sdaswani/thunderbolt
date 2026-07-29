@@ -1,0 +1,41 @@
+src/settings/models/use-edit-model-form-state.ts
+  s_deb79165c1e6b3::t_b9e8b2cdef86af 28-31,42,45-46,53-61,118-133,141,167-169,172-174
+src/components/chat/thinking-chip.test.tsx
+  s_deb79165c1e6b3::t_496063aad70b52 1-31
+src/ai/fetch.ts
+  s_deb79165c1e6b3::t_1136fedd6574d5 15
+  s_deb79165c1e6b3::t_6b00741a105e16 16-19,747
+src/settings/models/model-catalog.test.ts
+  s_deb79165c1e6b3::t_bde8b923dc60a8 107,110,112,118,120-121,127-141
+  s_deb79165c1e6b3::t_d349fec9029429 142-144
+  s_deb79165c1e6b3::t_d3dff299a8bec4 145
+src/ai/thinking-session.ts
+  s_deb79165c1e6b3::t_365a91e84828d3 33-40
+src/ai/thinking-session.test.ts
+  s_deb79165c1e6b3::t_82618ccca4968c 6-10,36-44
+  s_deb79165c1e6b3::t_aa45fda27c702d 45
+src/settings/models/edit-model-form.tsx
+  s_deb79165c1e6b3::t_9416e000fbaf6c 120-175
+  s_deb79165c1e6b3::t_ce4966c236b41e 9,14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.16",
+  "base_commit_sha": "d28ada0b316bfa30d8898d2b2779758de8f4ae41",
+  "prompts": {},
+  "humans": {
+    "h_d30d732bb7c010": {
+      "author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  },
+  "sessions": {
+    "s_deb79165c1e6b3": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "e92d34b6-c1bd-45a2-b175-b630c77f177f",
+        "model": "grok-4.5"
+      },
+      "human_author": "Susheel Daswani <Sdaswani@cs.stanford.edu>"
+    }
+  }
+}
