@@ -15,13 +15,16 @@ import type { RequestPermissionRequest, RequestPermissionResponse } from '@agent
 import type { HttpClient } from '@/lib/http'
 import type { FetchFn } from '@/lib/proxy-fetch'
 import type { SessionSideEffectSink } from '@/acp/translators/acp-to-ai-sdk'
-import type { ChatThread, Mode, Model, SaveMessagesFunction } from '@/types'
+import type { ChatThread, Model, SaveMessagesFunction } from '@/types'
 
 /** Capabilities advertised by an ACP agent on `initialize`. Stored on the
  *  adapter so the connect logic can branch on `loadSession` and future
  *  prompt-capability flags surface to the composer. */
 export type AgentCapabilities = {
   loadSession: boolean
+  /** Agent accepts enabled skill definitions through Thunderbolt's namespaced
+   *  ACP session metadata extension. */
+  skills: boolean
   /** Agent advertises `sessionCapabilities.resume` (`session/resume`): it can
    *  restore a prior session's private execution state from its own store
    *  WITHOUT replaying the transcript (unlike `loadSession`). Lets the app hand
@@ -63,7 +66,6 @@ export type AgentAdapterContext = {
   chatThread: ChatThread | null
   acpSessionId: string | null
   saveMessages: SaveMessagesFunction
-  selectedMode: Mode
   selectedModel: Model
   mcpClients: NamedMCPClient[]
   /** Reconnect a dropped MCP client at the `tools()` boundary; returns a fresh

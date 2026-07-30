@@ -4,6 +4,7 @@
 
 import { describe, expect, test } from 'bun:test'
 import type { ModelProfile } from '@/types'
+import { widgetRegistry } from '@/widgets'
 import { APP_HARNESS_ENVIRONMENT_PROMPT } from '@shared/agent-core/environment-prompt'
 import { createPrompt, createPromptParts, type PromptParams } from './prompt'
 
@@ -37,7 +38,6 @@ const createStubProfile = (overrides: Partial<ModelProfile> = {}): ModelProfile 
 const baseParams: PromptParams = {
   modelName: 'Test Model',
   profile: null,
-  modeName: null,
   preferredName: 'Alice',
   location: { name: 'New York', lat: 40.7, lng: -74.0 },
   localization: {
@@ -48,6 +48,7 @@ const baseParams: PromptParams = {
     currency: 'USD',
   },
   integrationStatus: 'READY',
+  hasWebTools: false,
 }
 
 describe('createPrompt', () => {
@@ -94,39 +95,28 @@ describe('createPrompt', () => {
     expect(result).toContain('CUSTOM_LINK_PREVIEWS')
   })
 
-  test('includes chatModeAddendum when modeName is chat', () => {
+  test('includes chatModeAddendum from profile', () => {
     const profile = createStubProfile({ chatModeAddendum: 'CHAT_ADDENDUM' })
-    const result = createPrompt({ ...baseParams, profile, modeName: 'chat', modeSystemPrompt: 'Chat mode active' })
+    const result = createPrompt({ ...baseParams, profile })
     expect(result).toContain('CHAT_ADDENDUM')
   })
 
-  test('includes searchModeAddendum when modeName is search', () => {
-    const profile = createStubProfile({ searchModeAddendum: 'SEARCH_ADDENDUM' })
-    const result = createPrompt({ ...baseParams, profile, modeName: 'search', modeSystemPrompt: 'Search mode' })
-    expect(result).toContain('SEARCH_ADDENDUM')
-  })
-
-  test('includes researchModeAddendum when modeName is research', () => {
-    const profile = createStubProfile({ researchModeAddendum: 'RESEARCH_ADDENDUM' })
-    const result = createPrompt({ ...baseParams, profile, modeName: 'research', modeSystemPrompt: 'Research mode' })
-    expect(result).toContain('RESEARCH_ADDENDUM')
-  })
-
-  test('does not include mode addendum when mode system prompt is absent', () => {
-    const profile = createStubProfile({ chatModeAddendum: 'SHOULD_NOT_APPEAR' })
-    const result = createPrompt({ ...baseParams, profile, modeName: 'chat' })
-    expect(result).not.toContain('SHOULD_NOT_APPEAR')
-  })
-
-  test('includes Active Mode section when modeSystemPrompt is set', () => {
-    const result = createPrompt({ ...baseParams, modeSystemPrompt: 'Mode instructions here' })
-    expect(result).toContain('# Active Mode')
-    expect(result).toContain('Mode instructions here')
-  })
-
-  test('omits Active Mode section when modeSystemPrompt is absent', () => {
+  test('always includes the Conversation Style section with the chat instructions', () => {
     const result = createPrompt(baseParams)
-    expect(result).not.toContain('# Active Mode')
+    expect(result).toContain('# Conversation Style')
+    expect(result).toContain('Make quick decisions')
+  })
+
+  test('includes web tool rules in the stable prompt when the web tools are available', () => {
+    const result = createPromptParts({ ...baseParams, hasWebTools: true })
+
+    expect(result.stablePrompt).toContain('Web lookups use the `search` and `fetch_content` tools')
+  })
+
+  test('omits web tool rules from the stable prompt when the web tools are unavailable', () => {
+    const result = createPromptParts({ ...baseParams, hasWebTools: false })
+
+    expect(result.stablePrompt).not.toContain('Web lookups use the `search` and `fetch_content` tools')
   })
 
   test('includes the reuse-before-search gate', () => {
@@ -143,6 +133,61 @@ describe('createPrompt', () => {
   test('keeps the verify-before-answering directive', () => {
     const result = createPrompt(baseParams)
     expect(result).toContain('never state facts without verifying them first')
+  })
+
+  test('tool-capable models get the skill listing without instruction bodies', () => {
+    const result = createPrompt({
+      ...baseParams,
+      supportsTools: true,
+      skills: [
+        {
+          name: 'daily-brief',
+          description: 'Use for a daily rundown.',
+          instruction: 'Gather private full instructions here.',
+        },
+      ],
+    })
+
+    expect(result).toContain('## Skills')
+    expect(result).toContain('Use the `skill` tool')
+    expect(result).toContain('- daily-brief: Use for a daily rundown.')
+    expect(result).not.toContain('Gather private full instructions here.')
+  })
+
+  test('non-tool models get the skill catalog and full instruction bodies inline', () => {
+    const result = createPrompt({
+      ...baseParams,
+      supportsTools: false,
+      skills: [
+        {
+          name: 'weather',
+          description: 'Use for weather forecasts.',
+          instruction: 'Emit the weather widget contract.',
+        },
+      ],
+    })
+
+    expect(result).toContain('- weather: Use for weather forecasts.')
+    expect(result).toContain('Full skill instructions:')
+    expect(result).toContain('### weather\nEmit the weather widget contract.')
+    expect(result).not.toContain('Use the `skill` tool')
+  })
+
+  test('does not inject widget instruction bodies into every prompt', () => {
+    const result = createPrompt(baseParams)
+
+    for (const widget of widgetRegistry) {
+      if ('instructions' in widget.module) {
+        expect(result).not.toContain(widget.module.instructions)
+      }
+    }
+    expect(result).not.toContain('# Widget Components')
+  })
+
+  test('keeps citation tags forbidden after removing widget instruction injection', () => {
+    const result = createPrompt(baseParams)
+
+    expect(result).toContain('Do not emit <widget:citation> tags')
   })
 
   test('keeps the per-turn timestamp in the suffix (prefix-cache friendly)', () => {
@@ -165,9 +210,9 @@ describe('createPrompt', () => {
     expect(result.indexOf('User location:')).toBeLessThan(result.indexOf('Current date/time'))
   })
 
-  test('appends the timestamp after the Active Mode block so it stays last', () => {
-    const result = createPrompt({ ...baseParams, modeSystemPrompt: 'Mode instructions' })
-    expect(result.indexOf('# Active Mode')).toBeLessThan(result.indexOf('Current date/time'))
+  test('appends the timestamp after the Conversation Style block so it stays last', () => {
+    const result = createPrompt(baseParams)
+    expect(result.indexOf('# Conversation Style')).toBeLessThan(result.indexOf('Current date/time'))
   })
 
   test('separates stable instructions from the volatile timestamp', () => {

@@ -14,20 +14,23 @@ import {
 } from '@/ai/step-logic'
 import { getAllSkills, getIntegrationStatus, getModel, getModelProfile, getSettings } from '@/dal'
 import { getMessage } from '@/dal/chat-messages'
+import { isWidgetSkillId } from '@/defaults/skills'
 import { extractLastUserText, resolveSkillTokenInstructions } from '@/skills/resolve-skill-system-messages'
+import { createSkillTool, selectEnabledSkillDefinitions } from '@/skills/skill-tool'
+import { isVoiceModeActive, voiceModeSystemNote } from '@/voice/voice-mode'
 import { collectAskEntriesFromCache, formatAskResponsesNote } from '@/widgets/ask/lib'
 import { getDb } from '@/db/database'
 import { getLocalSetting } from '@/stores/local-settings-store'
 import { hydrateAttachmentsAsFileParts } from '@/lib/attachments'
 import { hydrateQuotesAsText } from '@/lib/quotes'
 import { isSsoMode } from '@/lib/auth-mode'
-import { getAuthToken } from '@/lib/auth-token'
+import { getAuthToken, getUserCacheSecret } from '@/lib/auth-token'
 import { fetch as baseFetch } from '@/lib/fetch'
 import { isLoopbackHost } from '@/lib/mcp-url-validation'
 import { normalizeOpenAiBaseUrl } from '@/lib/openai-base-url'
 import type { FetchFn } from '@/lib/proxy-fetch'
 import { createToolset, getAvailableTools, type ToolCallCache } from '@/lib/tools'
-import type { Model, ModelProfile, ThunderboltUIMessage, UIMessageMetadata } from '@/types'
+import type { Model, ModelProfile, Skill, ThunderboltUIMessage, UIMessageMetadata } from '@/types'
 import type { SourceMetadata } from '@/types/source'
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
@@ -57,10 +60,10 @@ import {
   type Tool,
   type ToolSet,
 } from 'ai'
-import { type MCPClient } from '@ai-sdk/mcp'
-import type { NamedMCPClient } from '@/lib/mcp-provider'
+import type { MCPClient, NamedMCPClient } from '@/lib/mcp-provider'
 import { isClosedConnectionError } from '@/lib/mcp-errors'
 import { smoothStreamWordDelayMs } from '@/chats/chat-throttle'
+import type { SkillDefinition } from '@shared/agent-core/skills'
 import { detectStreamChunk } from './smooth-chunking'
 import { createMessageMetadata } from './message-metadata'
 
@@ -109,7 +112,7 @@ let userTinfoilClient: SecureClient | null = null
  */
 const createSystemTinfoilClient = (cloudUrl: string): Promise<SecureClient> => {
   const clientPromise = import('tinfoil').then(
-    ({ SecureClient }) => new SecureClient({ baseURL: `${cloudUrl}/tinfoil` }),
+    ({ SecureClient }) => new SecureClient({ baseURL: `${cloudUrl}/tinfoil`, userCacheSecret: getUserCacheSecret() }),
   )
   void clientPromise.catch(() => systemTinfoilClients.delete(cloudUrl))
   systemTinfoilClients.set(cloudUrl, clientPromise)
@@ -140,14 +143,14 @@ export const getSystemTinfoilClient = async (): Promise<SecureClient> => {
  * swallowed ONLY here because this is a speculative cache fill — the real send
  * still surfaces attestation failures loudly through {@link createModel}.
  */
-export const prewarmSystemModel = async (model: Pick<Model, 'provider' | 'isSystem'> | null | undefined) => {
+export const runSystemModelPrewarm = async (model: Pick<Model, 'provider' | 'isSystem'> | null | undefined) => {
   if (!model || model.provider !== 'tinfoil' || !model.isSystem) {
     return
   }
   try {
     await getSystemTinfoilClient()
   } catch (error) {
-    console.warn('prewarmSystemModel: warm-up skipped', error)
+    console.warn('runSystemModelPrewarm: warm-up skipped', error)
   }
 }
 
@@ -155,7 +158,7 @@ export const prewarmSystemModel = async (model: Pick<Model, 'provider' | 'isSyst
  *  a new attestation context. Use when a key-config error keeps repeating
  *  inside the SDK's own reset+retry — the cached client's transport is wedged
  *  and only a brand-new instance breaks the cycle. */
-const evictSystemTinfoilClient = (): void => {
+export const evictSystemTinfoilClient = (): void => {
   const cloudUrl = getLocalSetting('cloudUrl').replace(/\/$/, '')
   systemTinfoilClients.delete(cloudUrl)
 }
@@ -163,7 +166,7 @@ const evictSystemTinfoilClient = (): void => {
 export const getTinfoilClient = async (): Promise<SecureClient> => {
   if (!userTinfoilClient) {
     const { SecureClient } = await import('tinfoil')
-    userTinfoilClient = new SecureClient()
+    userTinfoilClient = new SecureClient({ userCacheSecret: getUserCacheSecret() })
   }
   await userTinfoilClient.ready()
   return userTinfoilClient
@@ -176,7 +179,7 @@ const evictUserTinfoilClient = (): void => {
 /** A KeyConfigMismatchError that survives the SDK's internal reset+retry means
  *  our cached `SecureClient` has a wedged transport. Evict it so the next call
  *  builds a fresh instance with a brand-new attestation context. */
-const isKeyConfigMismatchError = (err: unknown): boolean =>
+export const isKeyConfigMismatchError = (err: unknown): boolean =>
   err instanceof Error && err.name === 'KeyConfigMismatchError'
 
 /** Reconnect a dropped MCP client; returns a fresh client or null. Supplied by
@@ -186,8 +189,6 @@ type ReconnectClient = (client: MCPClient) => Promise<MCPClient | null>
 type AiFetchStreamingResponseOptions = {
   init: RequestInit
   modelId: string
-  modeSystemPrompt?: string
-  modeName?: string
   mcpClients?: NamedMCPClient[]
   reconnectClient?: ReconnectClient
   httpClient: HttpClient
@@ -551,6 +552,7 @@ export type PreparedAiRequestConfig = {
   readonly supportsTools: boolean
   readonly sourceCollector: SourceMetadata[]
   readonly toolset: Record<string, Tool>
+  readonly skills: readonly SkillDefinition[]
   readonly mcpToolsMetadata: UIMessageMetadata['mcpTools']
   readonly stableSystemPrompt: string
   readonly volatileSystemPrompt: string
@@ -559,18 +561,35 @@ export type PreparedAiRequestConfig = {
 
 export type PrepareAiRequestConfigOptions = {
   readonly modelId: string
-  readonly modeSystemPrompt?: string
-  readonly modeName?: string
   readonly mcpClients?: NamedMCPClient[]
   readonly reconnectClient?: ReconnectClient
   readonly httpClient: HttpClient
 }
 
+/** Register progressive skill loading only for models that support tools. */
+export const addSkillTool = (
+  toolset: Record<string, Tool>,
+  skills: readonly SkillDefinition[],
+  supportsTools: boolean,
+): Record<string, Tool> => {
+  if (supportsTools) {
+    toolset.skill = createSkillTool(skills)
+  }
+  return toolset
+}
+
+/**
+ * Select skills disclosed in the built-in model's system prompt.
+ *
+ * Tool-capable models receive every enabled skill, while non-tool models only
+ * receive widget rendering contracts inline.
+ */
+export const selectPromptSkillDefinitions = (skills: readonly Skill[], supportsTools: boolean): SkillDefinition[] =>
+  selectEnabledSkillDefinitions(supportsTools ? skills : skills.filter(({ id }) => isWidgetSkillId(id)))
+
 /** Load model/profile/settings and build one send's app + MCP tools and prompt. */
 export const prepareAiRequestConfig = async ({
   modelId,
-  modeSystemPrompt,
-  modeName,
   mcpClients = [],
   reconnectClient = async () => null,
   httpClient,
@@ -596,13 +615,16 @@ export const prepareAiRequestConfig = async ({
     throw new Error('Model not found')
   }
   const profile = await getModelProfile(db, modelId)
+  const storedSkills = await getAllSkills(db)
+  const skills = selectEnabledSkillDefinitions(storedSkills)
   const supportsTools = model.toolUsage !== 0
   const sourceCollector: SourceMetadata[] = []
   const toolCallCache: ToolCallCache = new Map()
   const availableTools = supportsTools
     ? await getAvailableTools(httpClient, sourceCollector, { settings, integrationStatus })
     : []
-  const appToolset = createToolset(availableTools, toolCallCache)
+  const appToolset = addSkillTool(createToolset(availableTools, toolCallCache), skills, supportsTools)
+  const hasWebTools = 'search' in appToolset && 'fetch_content' in appToolset
   const merged = supportsTools
     ? await mergeMcpTools(appToolset, mcpClients, reconnectClient)
     : { toolset: appToolset, summary: undefined, mcpTools: undefined }
@@ -615,7 +637,6 @@ export const prepareAiRequestConfig = async ({
   const prompt = createPromptParts({
     modelName: model.name,
     profile,
-    modeName: modeName ?? null,
     preferredName: settings.preferredName,
     location: {
       name: settings.locationName,
@@ -630,8 +651,10 @@ export const prepareAiRequestConfig = async ({
       currency: settings.currency,
     },
     integrationStatus: integrationStatuses.length > 0 ? integrationStatuses.join(', ') : 'READY',
-    modeSystemPrompt,
+    hasWebTools,
     mcpServersSummary: merged.summary,
+    skills: selectPromptSkillDefinitions(storedSkills, supportsTools),
+    supportsTools,
   })
 
   return {
@@ -640,6 +663,7 @@ export const prepareAiRequestConfig = async ({
     supportsTools,
     sourceCollector,
     toolset: merged.toolset,
+    skills,
     mcpToolsMetadata: merged.mcpTools,
     stableSystemPrompt: prompt.stablePrompt,
     volatileSystemPrompt: prompt.volatilePrompt,
@@ -650,8 +674,6 @@ export const prepareAiRequestConfig = async ({
 export const aiFetchStreamingResponse = async ({
   init,
   modelId,
-  modeSystemPrompt,
-  modeName,
   mcpClients,
   reconnectClient,
   httpClient,
@@ -667,11 +689,9 @@ export const aiFetchStreamingResponse = async ({
   // reach this function the user turn is already persisted.
 
   const db = getDb()
-  const { model, profile, supportsTools, sourceCollector, toolset, mcpToolsMetadata, systemPrompt } =
+  const { model, profile, supportsTools, sourceCollector, toolset, skills, mcpToolsMetadata, systemPrompt } =
     await prepareAiRequestConfig({
       modelId,
-      modeSystemPrompt,
-      modeName,
       mcpClients,
       reconnectClient,
       httpClient,
@@ -680,7 +700,7 @@ export const aiFetchStreamingResponse = async ({
     console.log('Model does not support tools, skipping tool setup')
   }
 
-  const activeNudges = getNudgeMessagesFromProfile(profile, modeName)
+  const activeNudges = getNudgeMessagesFromProfile(profile)
 
   try {
     const baseModel = await createModel(model, getProxyFetch)
@@ -810,23 +830,11 @@ export const aiFetchStreamingResponse = async ({
     // regenerate so the model sees the user's *current* skill library, not
     // a snapshot from when the message was originally typed.
     //
-    // Skills v1 §OQ6: skills are intentionally available in *every* mode
-    // (Chat, Search, Research). There's no per-mode gating here — a skill
-    // is text injection, not a tool, and modes that disagree on tools
-    // still agree on text. If a future mode wants to exclude skills it'd
-    // need an explicit `noSkills` flag on the mode definition.
-    //
     // The composer (`chat-prompt-input.tsx`) uses the same helpers to size
     // the context-overflow estimate so the budget and the actual prepend
     // stay in lockstep.
     const lastUserText = extractLastUserText(messages)
-    const allSkills = await getAllSkills(db)
-    const instructionBySlug = new Map<string, string>()
-    for (const skill of allSkills) {
-      if (skill.enabled === 1 && skill.name && skill.instruction) {
-        instructionBySlug.set(skill.name, skill.instruction)
-      }
-    }
+    const instructionBySlug = new Map(skills.map(({ name, instruction }) => [name, instruction]))
     const skillSystemMessages = resolveSkillTokenInstructions(lastUserText, instructionBySlug)
 
     // Preserve the upstream status (and detail) when surfacing an API error to
@@ -880,7 +888,11 @@ export const aiFetchStreamingResponse = async ({
         ).flat()
       : []
     const askResponsesNote = formatAskResponsesNote(askEntries)
-    const systemNotes = [...skillSystemMessages, ...(askResponsesNote ? [askResponsesNote] : [])]
+    // Voice turns reuse this same send path; when voice is active, prepend the
+    // voice self-context so the model knows it's speaking aloud, keeps replies
+    // brief, and answers about itself instead of web-searching its own identity.
+    const voiceNotes = isVoiceModeActive() ? [voiceModeSystemNote] : []
+    const systemNotes = [...voiceNotes, ...skillSystemMessages, ...(askResponsesNote ? [askResponsesNote] : [])]
 
     const stream = createUIMessageStream({
       generateId: uuidv7,

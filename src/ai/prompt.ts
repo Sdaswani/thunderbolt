@@ -2,15 +2,15 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { widgetPrompts } from '@/widgets'
+import { chatPrompt } from '@/ai/prompts/chat'
+import { webToolsPrompt } from '@/ai/prompts/web-tools'
 import type { ModelProfile } from '@/types'
+import { buildFallbackSkillDisclosure, buildSkillListing, type SkillDefinition } from '@shared/agent-core/skills'
 
 /** Parameters to build the system prompt */
 export type PromptParams = {
   modelName: string
   profile: ModelProfile | null
-  /** Mode name for mode-specific prompt overrides (e.g. 'chat', 'search', 'research') */
-  modeName: string | null
   preferredName: string
   location: { name?: string; lat?: number; lng?: number }
   localization: {
@@ -22,10 +22,14 @@ export type PromptParams = {
   }
   /** Integration status for the model to check before showing connect widget */
   integrationStatus: string
-  /** Optional mode-specific system prompt instructions */
-  modeSystemPrompt?: string
+  /** Whether the built-in web tools (`search`, `fetch_content`) are available for this request */
+  hasWebTools: boolean
   /** Summary of connected MCP servers (name + tool count) */
   mcpServersSummary?: string
+  /** Enabled skills available to the model */
+  skills?: readonly SkillDefinition[]
+  /** Whether the model can load skill instructions through tools */
+  supportsTools?: boolean
 }
 
 export type PromptParts = {
@@ -39,27 +43,22 @@ export const createPromptParts = (
   {
     modelName,
     profile,
-    modeName,
     preferredName,
     location,
     localization,
     integrationStatus,
-    modeSystemPrompt,
+    hasWebTools,
     mcpServersSummary,
+    skills = [],
+    supportsTools = true,
   }: PromptParams,
   currentDate: Date = new Date(),
 ): PromptParts => {
   const toolsOverride = profile?.toolsOverride ?? undefined
   const linkPreviewsOverride = profile?.linkPreviewsOverride ?? undefined
-  const modeAddendum = !profile
-    ? undefined
-    : modeName === 'chat'
-      ? profile.chatModeAddendum
-      : modeName === 'search'
-        ? profile.searchModeAddendum
-        : modeName === 'research'
-          ? profile.researchModeAddendum
-          : undefined
+  // Chat is the only conversation style now (Search/Research ship as default
+  // skills), so its per-model addendum is the only one applied.
+  const chatAddendum = profile?.chatModeAddendum ?? undefined
   // The date/time changes every send; it goes in the suffix (see the ordering
   // note on the returned template), while the stable context stays in the prefix.
   const currentDateTime = `Current date/time: ${currentDate.toLocaleString('en-US', {
@@ -82,6 +81,7 @@ export const createPromptParts = (
   ]
     .filter(Boolean)
     .join('\n')
+  const skillDisclosure = supportsTools ? buildSkillListing(skills) : buildFallbackSkillDisclosure(skills)
 
   // Output Format asks models to format math as `$…$` / `$$…$$` only (never
   // `\(…\)` / `\[…\]`). The chat renderer (src/components/chat/memoized-markdown.tsx)
@@ -129,8 +129,10 @@ If you're unsure whether to search and nothing in the conversation answers it: S
 Wait for tool results before responding—never state facts without verifying them first.
 Think about what widget components to show the user, then work backwards to the tools you need.
 Don't mention tool names unless asked.
+${hasWebTools ? `\n${webToolsPrompt}` : ''}
 ${toolsOverride ? `\n${toolsOverride}` : ''}
 ${mcpServersSummary ? `\n## Connected MCP Servers\nYou have tools from these external services (tool names prefixed by server name):\n${mcpServersSummary}\nUse these when the user asks about these services.` : ''}
+${skillDisclosure ? `\n${skillDisclosure}` : ''}
 
 ## Link Previews
 • Aggregate pages (listicles, "Top 10") are for DISCOVERY ONLY
@@ -138,18 +140,19 @@ ${mcpServersSummary ? `\n## Connected MCP Servers\nYou have tools from these ext
 • For products: link to official manufacturer pages
 ${linkPreviewsOverride ? `\n${linkPreviewsOverride}` : ''}
 
-${widgetPrompts}
-
 # Output Format
 Cite sources with [N] INLINE at the end of the sentence, on the SAME LINE — never on a new line or separate paragraph.
 Place each [N] once after the period of the last sentence using that source.
+Do not emit <widget:citation> tags, 【1】 brackets, footnotes, or source lists at the end.
 Correct: "The metro area has 37 million residents. [1] [2]"
 Wrong: "The metro area has 37 million residents.\n[1]" (citation on new line)
 Wrong: "Tokyo has 14 million residents. [1] The metro area has 37 million. [1]" (repeated [1])
 Wrong: "Tokyo has 14 million residents." (missing [N])
 Wrong: "| Tokyo | 14 million | [1] |" (citation in separate column)
 Format math as LaTeX with dollar delimiters: $…$ inline, $$…$$ for standalone equations. Never use \\(…\\) or \\[…\\].
-${modeSystemPrompt ? `\n# Active Mode (follow these instructions)\n${modeSystemPrompt}${modeAddendum ? `\n\n${modeAddendum}` : ''}` : ''}`
+
+# Conversation Style (follow these instructions)
+${chatPrompt}${chatAddendum ? `\n\n${chatAddendum}` : ''}`
   return {
     stablePrompt,
     volatilePrompt: currentDateTime,
