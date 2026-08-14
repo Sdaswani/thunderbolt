@@ -5,8 +5,8 @@
 import { describe, expect, test } from 'bun:test'
 import type { ModelProfile } from '@/types'
 import { widgetRegistry } from '@/widgets'
-import { APP_HARNESS_ENVIRONMENT_PROMPT } from '@shared/agent-core/environment-prompt'
-import { createPrompt, createPromptParts, type PromptParams } from './prompt'
+import { appHarnessEnvironmentPrompt } from '@shared/agent-core/environment-prompt'
+import { assembleBuiltInModelInput, createPrompt, createPromptParts, type PromptParams } from './prompt'
 
 const createStubProfile = (overrides: Partial<ModelProfile> = {}): ModelProfile => ({
   modelId: 'test-model',
@@ -50,6 +50,69 @@ const baseParams: PromptParams = {
   integrationStatus: 'READY',
   hasWebTools: false,
 }
+
+describe('assembleBuiltInModelInput', () => {
+  const sharedHistory = [
+    { role: 'user' as const, content: 'first question' },
+    { role: 'assistant' as const, content: 'first answer' },
+  ]
+
+  test('keeps all system content at the front and ends on the current user turn', () => {
+    const firstPrompt = createPromptParts(baseParams, new Date('2026-07-10T12:00:00Z'))
+    const secondPrompt = createPromptParts(baseParams, new Date('2026-07-10T12:01:00Z'))
+    const fixedVolatileNotes = ['Voice mode is active.', 'Follow project style.', 'Ask responses: concise']
+    const firstUserMessage = { role: 'user' as const, content: 'first follow-up' }
+    const secondUserMessage = { role: 'user' as const, content: 'second follow-up' }
+    const first = assembleBuiltInModelInput(
+      firstPrompt.stablePrompt,
+      [...sharedHistory, firstUserMessage],
+      [firstPrompt.volatilePrompt, ...fixedVolatileNotes],
+    )
+    const second = assembleBuiltInModelInput(
+      secondPrompt.stablePrompt,
+      [...sharedHistory, secondUserMessage],
+      [secondPrompt.volatilePrompt, ...fixedVolatileNotes],
+    )
+    const firstMessages = [{ role: 'system' as const, content: first.system }, ...first.messages]
+
+    expect(firstMessages.map(({ role }) => role)).toEqual(['system', 'user', 'assistant', 'user'])
+    expect(first.system).toContain(firstPrompt.stablePrompt)
+    expect(first.system).toContain(firstPrompt.volatilePrompt)
+    expect(first.system).toContain(fixedVolatileNotes.join('\n\n'))
+    expect(first.system).not.toBe(second.system)
+    expect(first.messages).toEqual([...sharedHistory, firstUserMessage])
+    expect(first.messages.at(-1)).toEqual(firstUserMessage)
+  })
+
+  test('keeps volatile notes in the system prompt for sole-message and empty inputs', () => {
+    const userMessage = { role: 'user' as const, content: 'hello' }
+    const volatileNote = 'Current date/time: now'
+
+    expect(assembleBuiltInModelInput('stable', [userMessage], [volatileNote])).toEqual({
+      system: `stable\n\n${volatileNote}`,
+      messages: [userMessage],
+    })
+    expect(assembleBuiltInModelInput('stable', [], [volatileNote])).toEqual({
+      system: `stable\n\n${volatileNote}`,
+      messages: [],
+    })
+  })
+
+  test('produces one front system block for a two-turn conversation', () => {
+    const currentUserMessage = { role: 'user' as const, content: 'second question' }
+    const input = assembleBuiltInModelInput(
+      'stable',
+      [...sharedHistory, currentUserMessage],
+      ['Current date/time: now', 'Voice mode is active.'],
+    )
+    const messages = [{ role: 'system' as const, content: input.system }, ...input.messages]
+    const firstNonSystemIndex = messages.findIndex(({ role }) => role !== 'system')
+
+    expect(firstNonSystemIndex).toBe(1)
+    expect(messages.slice(firstNonSystemIndex).every(({ role }) => role !== 'system')).toBeTrue()
+    expect(messages.at(-1)).toEqual(currentUserMessage)
+  })
+})
 
 describe('createPrompt', () => {
   test('includes model name', () => {
@@ -121,7 +184,6 @@ describe('createPrompt', () => {
 
   test('includes the reuse-before-search gate', () => {
     const result = createPrompt(baseParams)
-    expect(result).toContain('reuse first, then search')
     expect(result).toContain("Don't repeat a tool call you already made")
   })
 
@@ -130,9 +192,20 @@ describe('createPrompt', () => {
     expect(result).toContain('time-sensitive that may have changed')
   })
 
-  test('keeps the verify-before-answering directive', () => {
+  test('uses the four-bucket search policy with an explicit search-request escape hatch', () => {
     const result = createPrompt(baseParams)
-    expect(result).toContain('never state facts without verifying them first')
+    expect(result).toContain('never_search')
+    expect(result).toContain('answer_then_offer')
+    expect(result).toContain('single_search')
+    expect(result).toContain('research')
+    expect(result).not.toContain('When in doubt, search')
+    expect(result).toContain('If the user asks you to search, verify, or look something up, always do it')
+  })
+
+  test('limits quick web lookups to one search and conditional fetching', () => {
+    const result = createPrompt({ ...baseParams, hasWebTools: true })
+    expect(result).toContain('run at most one search')
+    expect(result).toContain('Fetch a page only when the snippets are insufficient')
   })
 
   test('tool-capable models get the skill listing without instruction bodies', () => {
@@ -190,10 +263,8 @@ describe('createPrompt', () => {
     expect(result).toContain('Do not emit <widget:citation> tags')
   })
 
-  test('keeps the per-turn timestamp in the suffix (prefix-cache friendly)', () => {
+  test('keeps the per-turn timestamp at the end of the complete stateless prompt', () => {
     const result = createPrompt(baseParams)
-    // The timestamp is the only per-turn-volatile field, so it comes after the
-    // whole static instruction block to leave a stable cacheable prefix.
     expect(result.indexOf('Current date/time')).toBeGreaterThan(result.indexOf('# Output Format'))
     expect(result.indexOf('Current date/time')).toBeGreaterThan(result.indexOf('# Tools'))
   })
@@ -215,19 +286,21 @@ describe('createPrompt', () => {
     expect(result.indexOf('# Conversation Style')).toBeLessThan(result.indexOf('Current date/time'))
   })
 
-  test('separates stable instructions from the volatile timestamp', () => {
-    const first = createPromptParts(baseParams, new Date('2026-07-10T12:00:00Z'))
-    const second = createPromptParts(baseParams, new Date('2026-07-10T12:01:00Z'))
+  test('separates stable instructions from the minute-precision timestamp', () => {
+    const first = createPromptParts(baseParams, new Date('2026-07-10T12:00:01Z'))
+    const sameMinute = createPromptParts(baseParams, new Date('2026-07-10T12:00:59Z'))
+    const nextMinute = createPromptParts(baseParams, new Date('2026-07-10T12:01:00Z'))
 
-    expect(first.stablePrompt).toBe(second.stablePrompt)
+    expect(first.stablePrompt).toBe(nextMinute.stablePrompt)
     expect(first.stablePrompt).not.toContain('Current date/time')
-    expect(first.volatilePrompt).not.toBe(second.volatilePrompt)
+    expect(first.volatilePrompt).toBe(sameMinute.volatilePrompt)
+    expect(first.volatilePrompt).not.toBe(nextMinute.volatilePrompt)
     expect(first.fullPrompt).toBe(`${first.stablePrompt}\n\n${first.volatilePrompt}`)
   })
 
   test('does not include the Pi app harness environment', () => {
     const result = createPromptParts(baseParams)
 
-    expect(result.fullPrompt).not.toContain(APP_HARNESS_ENVIRONMENT_PROMPT)
+    expect(result.fullPrompt).not.toContain(appHarnessEnvironmentPrompt)
   })
 })

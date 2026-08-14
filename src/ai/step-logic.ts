@@ -3,6 +3,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import type { ModelProfile } from '@/types'
+import type { WebToolBudgetProbe } from './web-tool-budget'
 
 type Step = { finishReason: string }
 
@@ -71,7 +72,7 @@ export const shouldRetry = (
 ): boolean => totalText.trim().length === 0 && hadToolCalls && attemptNumber < maxAttempts
 
 /** Keys for agentic loop nudge messages */
-type NudgeKey = 'finalStep' | 'preventive' | 'retry'
+type NudgeKey = 'finalStep' | 'preventive' | 'retry' | 'webBudget'
 
 /** Shape for a complete set of nudge messages — adding a new key requires all sets to update */
 export type NudgeMessages = Readonly<Record<NudgeKey, string>>
@@ -81,30 +82,33 @@ export const nudgeMessages: NudgeMessages = {
   finalStep: 'RESPOND NOW with the information gathered. Do not ask questions.',
   preventive: 'Synthesize your tool results and respond now.',
   retry: 'Respond now with the information gathered. No more tools.',
+  webBudget: 'Web tool budget for this turn is spent. Respond now using the results already gathered.',
 }
 
 /** Compute the prepareStep overrides for a single step of the agentic loop */
 export const buildStepOverrides = <TMessage>({
   steps,
   messages,
-  systemPrompt,
+  currentSystemPrompt,
   profile,
   maxSteps,
   nudgeThreshold,
   activeNudges,
+  webBudgetProbe,
 }: {
   steps: Step[]
   messages: TMessage[]
-  systemPrompt: string
+  currentSystemPrompt: string
   profile: ModelProfile | null
   maxSteps: number
   nudgeThreshold: number
   activeNudges: NudgeMessages
+  webBudgetProbe?: WebToolBudgetProbe
 }) => {
   const hadToolCallSteps = steps.some((s) => s.finishReason === 'tool-calls')
   const citationSystem =
     profile?.citationReinforcementEnabled === 1 && hadToolCallSteps
-      ? systemPrompt + (profile.citationReinforcementPrompt ?? '')
+      ? currentSystemPrompt + (profile.citationReinforcementPrompt ?? '')
       : undefined
 
   if (isFinalStep(steps.length, maxSteps)) {
@@ -112,6 +116,14 @@ export const buildStepOverrides = <TMessage>({
       system: citationSystem,
       activeTools: [] as never[],
       messages: [...messages, { role: 'user' as const, content: activeNudges.finalStep }],
+    }
+  }
+
+  if (webBudgetProbe?.isExhausted && webBudgetProbe.exhaustedAttempts > 0) {
+    return {
+      system: citationSystem,
+      toolChoice: 'none' as const,
+      messages: [...messages, { role: 'user' as const, content: activeNudges.webBudget }],
     }
   }
 
@@ -145,5 +157,6 @@ export const getNudgeMessagesFromProfile = (profile: ModelProfile | null): Nudge
     finalStep: profile.nudgeFinalStep ?? nudgeMessages.finalStep,
     preventive: profile.nudgePreventive ?? nudgeMessages.preventive,
     retry: profile.nudgeRetry ?? nudgeMessages.retry,
+    webBudget: nudgeMessages.webBudget,
   }
 }

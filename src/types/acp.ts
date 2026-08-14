@@ -15,6 +15,9 @@ import type { RequestPermissionRequest, RequestPermissionResponse } from '@agent
 import type { HttpClient } from '@/lib/http'
 import type { FetchFn } from '@/lib/proxy-fetch'
 import type { SessionSideEffectSink } from '@/acp/translators/acp-to-ai-sdk'
+import type { TurnBudgetConsumer } from '@/ai/retry-budget'
+import type { TurnTelemetry } from '@/ai/turn-telemetry'
+import type { WebToolBudget } from '@/ai/web-tool-budget'
 import type { ChatThread, Model, SaveMessagesFunction } from '@/types'
 
 /** Capabilities advertised by an ACP agent on `initialize`. Stored on the
@@ -79,6 +82,9 @@ export type AgentAdapterContext = {
   reconnectClient: (client: MCPClient) => Promise<MCPClient | null>
   httpClient: HttpClient
   getProxyFetch: () => FetchFn
+  turnBudget?: TurnBudgetConsumer
+  telemetry?: TurnTelemetry
+  webToolBudget?: WebToolBudget
   /** Increments only when the current assistant response is regenerated. Built-in
    *  persistent harnesses use it to rebuild from the edited transcript without
    *  rebuilding during ordinary transcript growth. */
@@ -116,6 +122,9 @@ export type AgentAdapter = {
   agent: Agent
   /** `null` for the built-in adapter (no ACP handshake). */
   capabilities: AgentCapabilities | null
+  /** Settles when this remote adapter generation terminates. Absent for the
+   *  built-in adapter, which has no transport lifecycle. */
+  closed?: Promise<void>
   fetch: (init: RequestInit, context: AgentAdapterContext) => Promise<Response>
   /** Eagerly resolve the thread's ACP session (no prompt), so the agent emits
    *  its advertised commands before the first send. No-op for the built-in

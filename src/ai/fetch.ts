@@ -2,7 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-import { createPromptParts } from '@/ai/prompt'
+import { assembleBuiltInModelInput, createPromptParts, type BuiltInModelInput } from '@/ai/prompt'
+import { createTurnBudget, createTurnBudgetExhaustedError, type TurnBudgetConsumer } from '@/ai/retry-budget'
+import type { TurnTelemetry } from '@/ai/turn-telemetry'
+import type { WebToolBudget } from '@/ai/web-tool-budget'
 import {
   buildStepOverrides,
   extractTextFromMessages,
@@ -29,7 +32,8 @@ import { getLocalSetting } from '@/stores/local-settings-store'
 import { hydrateAttachmentsAsFileParts } from '@/lib/attachments'
 import { hydrateQuotesAsText } from '@/lib/quotes'
 import { isSsoMode } from '@/lib/auth-mode'
-import { getAuthToken, getUserCacheSecret } from '@/lib/auth-token'
+import { getAuthToken } from '@/lib/auth-token'
+import { classifyErrorKind } from '@/lib/error-utils'
 import { fetch as baseFetch } from '@/lib/fetch'
 import { isLoopbackHost } from '@/lib/mcp-url-validation'
 import { normalizeOpenAiBaseUrl } from '@/lib/openai-base-url'
@@ -41,7 +45,6 @@ import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { HttpClient } from '@/lib/http'
-import type { SecureClient } from 'tinfoil'
 import { v7 as uuidv7 } from 'uuid'
 
 // Currently @openrouter/ai-sdk-provider is NOT compatible with Vercel AI SDK v5. If you enable this, you will get the following error:
@@ -71,6 +74,13 @@ import { smoothStreamWordDelayMs } from '@/chats/chat-throttle'
 import type { SkillDefinition } from '@shared/agent-core/skills'
 import { detectStreamChunk } from './smooth-chunking'
 import { createMessageMetadata } from './message-metadata'
+import {
+  evictSystemTinfoilClient,
+  evictUserTinfoilClient,
+  getSystemTinfoilClient,
+  getTinfoilClient,
+  isTinfoilTransportWedgedError,
+} from './tinfoil-client'
 
 /**
  * Sanitizes a server name into a valid tool prefix.
@@ -97,96 +107,6 @@ export const ollama = createOpenAI({
   fetch,
 })
 
-// Cached so attestation runs once per page load. `tinfoil` is dynamically
-// imported to code-split its attestation/crypto deps.
-//
-// system: HPKE body POSTs to <cloudUrl>/tinfoil; backend injects our key.
-// user:   BYOK — direct to the enclave with the user's own key.
-//
-// System cache is keyed by cloudUrl so a dev-tools URL switch hits the new
-// backend on the next call.
-const systemTinfoilClients = new Map<string, Promise<SecureClient>>()
-let userTinfoilClient: SecureClient | null = null
-
-/**
- * Build a fresh system `SecureClient` promise and cache it synchronously
- * (before the dynamic `import('tinfoil')` resolves) so a prewarm and an
- * immediate first send share one client and attest once instead of racing into
- * two attestations. On construction failure we drop the entry so the next call
- * retries the import rather than inheriting a sticky rejection.
- */
-const createSystemTinfoilClient = (cloudUrl: string): Promise<SecureClient> => {
-  const clientPromise = import('tinfoil').then(
-    ({ SecureClient }) => new SecureClient({ baseURL: `${cloudUrl}/tinfoil`, userCacheSecret: getUserCacheSecret() }),
-  )
-  void clientPromise.catch(() => systemTinfoilClients.delete(cloudUrl))
-  systemTinfoilClients.set(cloudUrl, clientPromise)
-  return clientPromise
-}
-
-export const getSystemTinfoilClient = async (): Promise<SecureClient> => {
-  // cloudUrl already ends in /v1 (shared with the OpenAI chat baseURL).
-  const cloudUrl = getLocalSetting('cloudUrl').replace(/\/$/, '')
-  // Reuse the cached construction promise across concurrent callers; `ready()`
-  // is awaited per call below (idempotent once attested).
-  const client = await (systemTinfoilClients.get(cloudUrl) ?? createSystemTinfoilClient(cloudUrl))
-  await client.ready()
-  return client
-}
-
-/**
- * Best-effort warm-up of the Tinfoil system enclave so the first chat send
- * doesn't pay the attestation handshake on the critical path. Fired (fire-and-
- * forget) from the chat-ready path for the built-in agent only — see
- * {@link useHydrateChatStore}; ACP agents route over the wire and never reach
- * {@link createModel}. No-op unless `model` is a Tinfoil *system* model (the
- * only path that attests via {@link getSystemTinfoilClient}); BYO/other
- * providers never attest here.
- *
- * Idempotent: `getSystemTinfoilClient` memoizes per cloudUrl, so repeated warm-
- * ups and a concurrent real send share the same in-flight client. Errors are
- * swallowed ONLY here because this is a speculative cache fill — the real send
- * still surfaces attestation failures loudly through {@link createModel}.
- */
-export const runSystemModelPrewarm = async (model: Pick<Model, 'provider' | 'isSystem'> | null | undefined) => {
-  if (!model || model.provider !== 'tinfoil' || !model.isSystem) {
-    return
-  }
-  try {
-    await getSystemTinfoilClient()
-  } catch (error) {
-    console.warn('runSystemModelPrewarm: warm-up skipped', error)
-  }
-}
-
-/** Drop the cached `SecureClient` so the next send constructs a fresh one with
- *  a new attestation context. Use when a key-config error keeps repeating
- *  inside the SDK's own reset+retry — the cached client's transport is wedged
- *  and only a brand-new instance breaks the cycle. */
-export const evictSystemTinfoilClient = (): void => {
-  const cloudUrl = getLocalSetting('cloudUrl').replace(/\/$/, '')
-  systemTinfoilClients.delete(cloudUrl)
-}
-
-export const getTinfoilClient = async (): Promise<SecureClient> => {
-  if (!userTinfoilClient) {
-    const { SecureClient } = await import('tinfoil')
-    userTinfoilClient = new SecureClient({ userCacheSecret: getUserCacheSecret() })
-  }
-  await userTinfoilClient.ready()
-  return userTinfoilClient
-}
-
-const evictUserTinfoilClient = (): void => {
-  userTinfoilClient = null
-}
-
-/** A KeyConfigMismatchError that survives the SDK's internal reset+retry means
- *  our cached `SecureClient` has a wedged transport. Evict it so the next call
- *  builds a fresh instance with a brand-new attestation context. */
-export const isKeyConfigMismatchError = (err: unknown): boolean =>
-  err instanceof Error && err.name === 'KeyConfigMismatchError'
-
 /** Reconnect a dropped MCP client; returns a fresh client or null. Supplied by
  *  the MCP provider via the chat store. See `src/lib/mcp-provider.tsx`. */
 type ReconnectClient = (client: MCPClient) => Promise<MCPClient | null>
@@ -197,6 +117,9 @@ type AiFetchStreamingResponseOptions = {
   mcpClients?: NamedMCPClient[]
   reconnectClient?: ReconnectClient
   httpClient: HttpClient
+  turnBudget?: TurnBudgetConsumer
+  webToolBudget?: WebToolBudget
+  telemetry?: TurnTelemetry
   /** Returns the current proxy fetch. Production callers pass the getter from
    *  `ProxyFetchProvider` (`useProxyFetchGetter()`); non-React callers (eval
    *  scripts) build a `proxyFetch` directly and wrap it in `() => fn`. */
@@ -388,7 +311,20 @@ export const resolveOpenAiCompatConnection = (
   }
 }
 
-export const createModel = async (modelConfig: Model, getProxyFetch: () => FetchFn) => {
+/** Time a Tinfoil client acquisition without changing its error behavior. */
+const acquireTinfoilClient = async <Client>(
+  acquire: () => Promise<Client>,
+  telemetry?: TurnTelemetry,
+): Promise<Client> => {
+  telemetry?.startPhase('attestation')
+  try {
+    return await acquire()
+  } finally {
+    telemetry?.endPhase('attestation')
+  }
+}
+
+export const createModel = async (modelConfig: Model, getProxyFetch: () => FetchFn, telemetry?: TurnTelemetry) => {
   // The thunderbolt provider goes through its own SSO-aware fetch below; all
   // other providers route through the universal proxy. We resolve the proxy
   // fetch lazily so a settings change between chat creation and this call
@@ -489,7 +425,16 @@ export const createModel = async (modelConfig: Model, getProxyFetch: () => Fetch
       // satisfy the SDK's apiKey requirement. User-added Tinfoil models keep
       // the BYOK flow and require a real key.
       if (modelConfig.isSystem) {
-        const client = await getSystemTinfoilClient()
+        const client = await acquireTinfoilClient(
+          () =>
+            getSystemTinfoilClient({
+              trace_id: telemetry?.traceId,
+              engine: 'legacy',
+              provider: modelConfig.provider,
+              model_id: modelConfig.id,
+            }),
+          telemetry,
+        )
         // Wrap SecureClient.fetch so the backend route's auth guard sees the
         // real Thunderbolt session token (Bearer) or cookies (SSO), not the
         // `Bearer thunderbolt-managed` placeholder the OpenAI SDK adds.
@@ -508,7 +453,7 @@ export const createModel = async (modelConfig: Model, getProxyFetch: () => Fetch
             try {
               return await client.fetch(input, upstreamInit)
             } catch (err) {
-              if (isKeyConfigMismatchError(err)) {
+              if (isTinfoilTransportWedgedError(err)) {
                 evictSystemTinfoilClient()
               }
               throw err
@@ -527,13 +472,22 @@ export const createModel = async (modelConfig: Model, getProxyFetch: () => Fetch
       if (!modelConfig.apiKey) {
         throw new Error('No API key provided')
       }
-      const client = await getTinfoilClient()
+      const client = await acquireTinfoilClient(
+        () =>
+          getTinfoilClient({
+            trace_id: telemetry?.traceId,
+            engine: 'legacy',
+            provider: modelConfig.provider,
+            model_id: modelConfig.id,
+          }),
+        telemetry,
+      )
       const evictingFetch: typeof fetch = Object.assign(
         async (input: RequestInfo | URL, init?: RequestInit) => {
           try {
             return await client.fetch(input, init)
           } catch (err) {
-            if (isKeyConfigMismatchError(err)) {
+            if (isTinfoilTransportWedgedError(err)) {
               evictUserTinfoilClient()
             }
             throw err
@@ -564,7 +518,6 @@ export type PreparedAiRequestConfig = {
   readonly mcpToolsMetadata: UIMessageMetadata['mcpTools']
   readonly stableSystemPrompt: string
   readonly volatileSystemPrompt: string
-  readonly systemPrompt: string
 }
 
 export type PrepareAiRequestConfigOptions = {
@@ -572,6 +525,8 @@ export type PrepareAiRequestConfigOptions = {
   readonly mcpClients?: NamedMCPClient[]
   readonly reconnectClient?: ReconnectClient
   readonly httpClient: HttpClient
+  readonly webToolBudget?: WebToolBudget
+  readonly telemetry?: TurnTelemetry
 }
 
 /** Register progressive skill loading only for models that support tools. */
@@ -601,7 +556,10 @@ export const prepareAiRequestConfig = async ({
   mcpClients = [],
   reconnectClient = async () => null,
   httpClient,
+  webToolBudget,
+  telemetry,
 }: PrepareAiRequestConfigOptions): Promise<PreparedAiRequestConfig> => {
+  telemetry?.startPhase('request_config')
   const db = getDb()
   const settings = await getSettings(db, {
     preferred_name: '',
@@ -624,6 +582,7 @@ export const prepareAiRequestConfig = async ({
   }
   const profile = await getModelProfile(db, modelId)
   const storedSkills = await getAllSkills(db)
+  telemetry?.endPhase('request_config')
   const skills = selectEnabledSkillDefinitions(storedSkills)
   const supportsTools = model.toolUsage !== 0
   const sourceCollector: SourceMetadata[] = []
@@ -631,11 +590,13 @@ export const prepareAiRequestConfig = async ({
   const availableTools = supportsTools
     ? await getAvailableTools(httpClient, sourceCollector, { settings, integrationStatus })
     : []
-  const appToolset = addSkillTool(createToolset(availableTools, toolCallCache), skills, supportsTools)
+  const appToolset = addSkillTool(createToolset(availableTools, toolCallCache, webToolBudget), skills, supportsTools)
   const hasWebTools = 'search' in appToolset && 'fetch_content' in appToolset
+  telemetry?.startPhase('mcp_discovery')
   const merged = supportsTools
     ? await mergeMcpTools(appToolset, mcpClients, reconnectClient)
     : { toolset: appToolset, summary: undefined, mcpTools: undefined }
+  telemetry?.endPhase('mcp_discovery')
 
   const integrationStatuses = [
     integrationStatus.googleConnected && !integrationStatus.googleEnabled ? 'GOOGLE_DISABLED' : null,
@@ -675,10 +636,34 @@ export const prepareAiRequestConfig = async ({
     mcpToolsMetadata: merged.mcpTools,
     stableSystemPrompt: prompt.stablePrompt,
     volatileSystemPrompt: prompt.volatilePrompt,
-    systemPrompt: prompt.fullPrompt,
   }
 }
 
+/** Order per-send system notes for the trailing half of the system prompt, with date/time first. */
+export const buildVolatileSystemNotes = ({
+  volatileSystemPrompt,
+  voiceNotes,
+  skillSystemMessages,
+  askResponsesNote,
+}: {
+  volatileSystemPrompt: string
+  voiceNotes: readonly string[]
+  skillSystemMessages: readonly string[]
+  askResponsesNote: string | null
+}): string[] => [
+  volatileSystemPrompt,
+  ...voiceNotes,
+  ...skillSystemMessages,
+  ...(askResponsesNote ? [askResponsesNote] : []),
+]
+
+/**
+ * Stream one response through the legacy built-in pipeline.
+ *
+ * Adapter callers supply the active turn consumer; direct callers receive a
+ * local budget. Only empty-response attempts after the first consume here
+ * because the routing fetch already consumed the initial request.
+ */
 export const aiFetchStreamingResponse = async ({
   init,
   modelId,
@@ -687,11 +672,15 @@ export const aiFetchStreamingResponse = async ({
   httpClient,
   getProxyFetch,
   thinkingEnabled,
+  turnBudget,
+  webToolBudget,
+  telemetry,
 }: AiFetchStreamingResponseOptions) => {
   const options = init as RequestInit & { body: string }
   const body = JSON.parse(options.body)
   const abortSignal: AbortSignal | undefined = options.signal ?? undefined
   const { messages } = body as { messages: ThunderboltUIMessage[]; id: string }
+  const requestBudget = turnBudget ?? createTurnBudget().consumer
 
   // The chat instance saves the user message via `saveMessages` before
   // invoking the adapter — see `src/chats/chat-instance.ts`. By the time we
@@ -703,10 +692,21 @@ export const aiFetchStreamingResponse = async ({
     mcpClients,
     reconnectClient,
     httpClient,
+    webToolBudget,
+    telemetry,
   })
   const thinkingDisabled = isThinkingDisabledForSend(prepared.model, thinkingEnabled)
   const model = withThinkingDisabledForSend(prepared.model, thinkingEnabled)
-  const { profile, supportsTools, sourceCollector, toolset, skills, mcpToolsMetadata, systemPrompt } = prepared
+  const {
+    profile,
+    supportsTools,
+    sourceCollector,
+    toolset,
+    skills,
+    mcpToolsMetadata,
+    stableSystemPrompt,
+    volatileSystemPrompt,
+  } = prepared
   if (!supportsTools) {
     console.log('Model does not support tools, skipping tool setup')
   }
@@ -714,7 +714,7 @@ export const aiFetchStreamingResponse = async ({
   const activeNudges = getNudgeMessagesFromProfile(profile)
 
   try {
-    const baseModel = await createModel(model, getProxyFetch)
+    const baseModel = await createModel(model, getProxyFetch, telemetry)
 
     const wrappedModel = wrapLanguageModel({
       providerId: model.provider,
@@ -761,12 +761,15 @@ export const aiFetchStreamingResponse = async ({
     /**
      * Run a single streamText attempt and return the result along with metadata
      */
-    const runStreamText = (inputMessages: Awaited<ReturnType<typeof convertToModelMessages>>) => {
+    const runStreamText = (input: BuiltInModelInput) => {
       return streamText({
+        // SDK-internal retries are invisible to the shared per-turn request budget.
+        // Keep retries in the app layers where every request is counted.
+        maxRetries: 0,
         temperature: modelTemperature,
         model: wrappedModel,
-        system: systemPrompt,
-        messages: inputMessages,
+        system: input.system,
+        messages: input.messages,
         tools: supportsTools ? (toolset as ToolSet) : undefined,
         stopWhen: stepCountIs(maxSteps),
         providerOptions,
@@ -787,16 +790,18 @@ export const aiFetchStreamingResponse = async ({
           return buildStepOverrides({
             steps,
             messages: stepMessages,
-            systemPrompt,
+            currentSystemPrompt: input.system,
             profile,
             maxSteps,
             nudgeThreshold,
             activeNudges,
+            webBudgetProbe: webToolBudget?.probe,
           })
         },
 
         abortSignal,
         onStepFinish: (step) => {
+          telemetry?.recordStep()
           console.info('step', {
             text: step.text,
             finishReason: step.finishReason,
@@ -853,7 +858,7 @@ export const aiFetchStreamingResponse = async ({
     // a snapshot from when the message was originally typed.
     //
     // The composer (`chat-prompt-input.tsx`) uses the same helpers to size
-    // the context-overflow estimate so the budget and the actual prepend
+    // the context-overflow estimate so the budget and the actual injection
     // stay in lockstep.
     const lastUserText = extractLastUserText(messages)
     const instructionBySlug = new Map(skills.map(({ name, instruction }) => [name, instruction]))
@@ -871,6 +876,7 @@ export const aiFetchStreamingResponse = async ({
           error: error.responseBody ?? error.message,
           status: error.statusCode,
           isRetryable: error.isRetryable,
+          kind: classifyErrorKind(error),
         })
       }
       // A provider that can't serialize a part throws this client-side, before
@@ -881,9 +887,16 @@ export const aiFetchStreamingResponse = async ({
       // must NOT be tagged 422, or they'd masquerade as a fixable attachment.
       if (UnsupportedFunctionalityError.isInstance(error)) {
         const isFilePart = /file part|media type/i.test(`${error.functionality} ${error.message}`)
-        return JSON.stringify({ error: error.message, status: isFilePart ? 422 : undefined, isRetryable: false })
+        return JSON.stringify({
+          error: error.message,
+          status: isFilePart ? 422 : undefined,
+          isRetryable: false,
+          kind: classifyErrorKind(error),
+        })
       }
-      return error instanceof Error ? error.message : String(error)
+      const message = error instanceof Error ? error.message : String(error)
+      const kind = classifyErrorKind(error)
+      return kind ? JSON.stringify({ error: message, kind }) : message
     }
 
     // Surface the user's persisted ask-widget responses (stored in each
@@ -910,11 +923,16 @@ export const aiFetchStreamingResponse = async ({
         ).flat()
       : []
     const askResponsesNote = formatAskResponsesNote(askEntries)
-    // Voice turns reuse this same send path; when voice is active, prepend the
+    // Voice turns reuse this same send path; when voice is active, include the
     // voice self-context so the model knows it's speaking aloud, keeps replies
     // brief, and answers about itself instead of web-searching its own identity.
     const voiceNotes = isVoiceModeActive() ? [voiceModeSystemNote] : []
-    const systemNotes = [...voiceNotes, ...skillSystemMessages, ...(askResponsesNote ? [askResponsesNote] : [])]
+    const volatileSystemNotes = buildVolatileSystemNotes({
+      volatileSystemPrompt,
+      voiceNotes,
+      skillSystemMessages,
+      askResponsesNote,
+    })
 
     const stream = createUIMessageStream({
       generateId: uuidv7,
@@ -924,13 +942,12 @@ export const aiFetchStreamingResponse = async ({
         // read from IndexedDB) so the model receives them. Only the reference is
         // persisted/synced; the bytes are inlined here, in-flight to the model.
         // Quote parts are likewise flattened to Markdown blockquote text parts.
+        telemetry?.startPhase('attachment_hydration')
         const baseMessages = await convertToModelMessages(
           hydrateQuotesAsText(await hydrateAttachmentsAsFileParts(messages)),
         )
-        let currentMessages: typeof baseMessages = [
-          ...systemNotes.map((content) => ({ role: 'system' as const, content })),
-          ...baseMessages,
-        ]
+        telemetry?.endPhase('attachment_hydration')
+        let currentInput = assembleBuiltInModelInput(stableSystemPrompt, baseMessages, volatileSystemNotes)
         let attemptNumber = 1
         let isRetry = false
         // Track tool calls across ALL attempts — a retry may produce no tool calls
@@ -938,7 +955,14 @@ export const aiFetchStreamingResponse = async ({
         let anyAttemptHadToolCalls = false
 
         while (attemptNumber <= maxAttempts) {
-          const result = runStreamText(currentMessages)
+          if (attemptNumber > 1 && !requestBudget.tryConsumeRequest()) {
+            // Mirror the routing choke point's denial so both layers surface the
+            // same named error instead of ending the turn as a silent finish.
+            telemetry?.recordRetry({ layer: 'turn_budget', reason: 'request_budget_exhausted', attempt: attemptNumber })
+            throw createTurnBudgetExhaustedError()
+          }
+
+          const result = runStreamText(currentInput)
           const messageMetadata = createMessageMetadata(modelId, sourceCollector, mcpToolsMetadata)
 
           // If this is not the last possible attempt, we need to check for empty response
@@ -974,11 +998,15 @@ export const aiFetchStreamingResponse = async ({
                   : activeNudges.retry
 
               console.info(`Empty response detected, retrying (attempt ${attemptNumber + 1}/${maxAttempts})...`)
-              currentMessages = [
-                ...currentMessages,
-                ...response.messages,
-                { role: 'user' as const, content: retryNudge },
-              ]
+              telemetry?.recordRetry({ layer: 'empty_response', reason: 'empty_response', attempt: attemptNumber + 1 })
+              currentInput = {
+                ...currentInput,
+                messages: [
+                  ...currentInput.messages,
+                  ...response.messages,
+                  { role: 'user' as const, content: retryNudge },
+                ],
+              }
 
               isRetry = true
               attemptNumber++
@@ -1009,7 +1037,7 @@ export const aiFetchStreamingResponse = async ({
     console.error('aiFetchStreamingResponse error', error)
     const status =
       (error as { status?: number }).status ?? (error as { response?: { status?: number } }).response?.status
-    return new Response(JSON.stringify({ error: (error as Error).message, status }), {
+    return new Response(JSON.stringify({ error: (error as Error).message, status, kind: classifyErrorKind(error) }), {
       status: status ?? 500,
       headers: { 'Content-Type': 'application/json' },
     })

@@ -53,11 +53,13 @@ import {
   type PreparedAiRequestConfig,
 } from '@/ai/fetch'
 import { isThinkingDisabledForSend } from '@/ai/thinking-session'
+import type { WebToolBudget } from '@/ai/web-tool-budget'
 import type { Agent, AgentAdapter, AgentAdapterContext } from '@/types/acp'
 import type { Model, ModelProfile, ThunderboltUIMessage } from '@/types'
 import { extractLastUserText, resolveSkillTokenInstructions } from '@/skills/resolve-skill-system-messages'
 import type { PiModelDescriptor, SeedTurn } from '@shared/agent-core'
-import { APP_HARNESS_ENVIRONMENT_PROMPT } from '@shared/agent-core/environment-prompt'
+import { appHarnessEnvironmentPrompt } from '@shared/agent-core/environment-prompt'
+import { vendorSupportsImages } from '@shared/defaults/models'
 import type { AgentHarness, AgentTool, ThinkingLevel } from '@earendil-works/pi-agent-core'
 import { prepareBuiltInConversation } from './built-in-conversation'
 
@@ -114,6 +116,10 @@ export type BuiltInAdapterOptions = {
 /** Providers the in-browser Pi harness can serve. Everything else (tinfoil, plus
  *  any future provider) stays on the legacy pipeline. */
 const piProviders = new Set<Model['provider']>(['anthropic', 'openai', 'custom', 'openrouter', 'thunderbolt'])
+
+/** Whether production routes a tool-capable model to the Pi harness. */
+export const isPiModelCandidate = (model: Pick<Model, 'provider' | 'toolUsage'>): boolean =>
+  piProviders.has(model.provider) && model.toolUsage !== 0
 
 /** Valid Pi thinking levels, used to validate a profile-supplied effort string. */
 const piThinkingLevels = new Set<ThinkingLevel>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
@@ -228,7 +234,7 @@ export type ResolvedPiModel = {
  *  fall back to legacy. Anthropic ids must exist in Pi's built-in catalog;
  *  OpenAI-wire providers must resolve a connection (api key / url present). The
  *  thinking level is derived from the model's profile for both families. */
-const resolvePiModel = (
+export const resolvePiModel = (
   agentCore: AgentCoreModule,
   context: AgentAdapterContext,
   profile: ModelProfile | null,
@@ -267,6 +273,10 @@ const resolvePiModel = (
       fetch: connection.fetch,
       reasoning: hasExplicitReasoning(profile),
       contextWindow: model.contextWindow ?? undefined,
+      // Pi's openai-compat descriptor is text-only by default; without this a
+      // vision-capable hosted model (e.g. Thunderbolt Opus) has its image blocks
+      // stripped before the wire and only sees the `[Attachment: …]` text label.
+      supportsImages: vendorSupportsImages(model.vendor),
     },
     thinkingLevel,
   }
@@ -321,13 +331,14 @@ export const harnessSignature = (
   const model =
     d.kind === 'anthropic'
       ? `anthropic|${d.modelId}|${hashSecret(d.apiKey)}`
-      : `openai-compat|${d.providerId}|${d.modelId}|${d.baseURL}|${hashSecret(d.apiKey)}|${d.reasoning}|${d.contextWindow ?? ''}`
+      : `openai-compat|${d.providerId}|${d.modelId}|${d.baseURL}|${hashSecret(d.apiKey)}|${d.reasoning}|${d.contextWindow ?? ''}|${d.supportsImages}`
   return `${model}|${resolved.thinkingLevel}|${stableSystemPrompt}|regenerate:${regenerationRevision}`
 }
 
 /** Compose Pi's cacheable prompt prefix while keeping the per-send timestamp last. */
+// Unlike assembleBuiltInModelInput, ACP harness deliberately keeps Pi's single-string system prompt shape.
 const composeAppHarnessSystemPrompt = (config: AppHarnessSystemPromptConfig): string =>
-  `${config.stableSystemPrompt}\n\n${APP_HARNESS_ENVIRONMENT_PROMPT}\n\n${config.volatileSystemPrompt}`
+  `${config.stableSystemPrompt}\n\n${appHarnessEnvironmentPrompt}\n\n${config.volatileSystemPrompt}`
 
 /** Build a thread's harness from the lazily-loaded engine and bind it to the
  *  thread's isolated workspace with resolved model + thinking level. Per-send app
@@ -371,6 +382,21 @@ const prepareHarnessForSend = async (
     allTools,
     allTools.map((tool) => tool.name),
   )
+}
+
+/** Install the Pi harness floor that disables tools after a denied web-tool call. */
+const installWebToolBudgetFloor = async (harness: AgentHarness, webToolBudget?: WebToolBudget): Promise<() => void> => {
+  if (!webToolBudget) {
+    return () => undefined
+  }
+  const applyBudgetFloor = async () => {
+    if (webToolBudget.probe.exhaustedAttempts) {
+      await harness.setActiveTools([])
+    }
+    return undefined
+  }
+  await applyBudgetFloor()
+  return harness.on('tool_result', applyBudgetFloor)
 }
 
 /** Return the thread's cached harness, building it on first use and REBUILDING it
@@ -446,7 +472,9 @@ const fetchViaHarness = async (
   // several MB) must NOT sit in the chat entry chunk on the critical landing path.
   // This dynamic import keeps it in a separate async chunk that loads only when a
   // built-in Pi agent actually runs; the legacy path's imports stay static.
+  context.telemetry?.startPhase('agent_core_load')
   const agentCore = await loadAgentCore()
+  context.telemetry?.endPhase('agent_core_load')
 
   // Resolve the model to a Pi descriptor; an unknown anthropic id or an
   // unconfigured OpenAI-wire provider falls back to the legacy pipeline so the
@@ -456,9 +484,12 @@ const fetchViaHarness = async (
     mcpClients: context.mcpClients,
     reconnectClient: context.reconnectClient,
     httpClient: context.httpClient,
+    webToolBudget: context.webToolBudget,
+    telemetry: context.telemetry,
   })
   const resolvedBase = resolvePiModel(agentCore, context, config.profile)
   if (!resolvedBase) {
+    context.telemetry?.setDimensions({ engine: 'legacy' })
     return fallback()
   }
   const resolved = withThinkingSessionOverride(resolvedBase, context.selectedModel, context.thinkingEnabled)
@@ -471,19 +502,27 @@ const fetchViaHarness = async (
   // Build the thread's harness on its first turn (seeding `history`); reuse it on
   // every later turn whose config signature is unchanged, and rebuild it when the
   // signature drifts (a mid-thread model / provider / key / thinking / MCP switch).
+  context.telemetry?.startPhase('harness_build')
   const signature = harnessSignature(resolved, config.stableSystemPrompt, context.regenerationRevision)
   const record = await getOrBuildHarness(cache, context.threadId, signature, () =>
     buildHarnessRecord(agentCore, context, resolved, history, config),
   )
   await prepareHarnessForSend(agentCore, record, config)
+  context.telemetry?.endPhase('harness_build')
   const { harness } = record
+  context.telemetry?.setDimensions({ engine: 'pi' })
 
   return new Response(
     agentCore.piHarnessToUiMessageStream(
       harness,
       async () => {
-        await harness.prompt(prompt.text, { images: prompt.images })
-        await harness.waitForIdle()
+        const removeBudgetFloor = await installWebToolBudgetFloor(harness, context.webToolBudget)
+        try {
+          await harness.prompt(prompt.text, { images: prompt.images })
+          await harness.waitForIdle()
+        } finally {
+          removeBudgetFloor()
+        }
       },
       {
         initial: { modelId: context.selectedModel.id },
@@ -504,9 +543,10 @@ const fetchViaHarness = async (
 }
 
 /**
- * Build the built-in agent's {@link AgentAdapter}. Its `fetch` routes Anthropic
- * models to the in-browser Pi harness and every other provider to the legacy
- * `aiFetchStreamingResponse` pipeline (overridable via `options.aiFetch`).
+ * Build the built-in agent's {@link AgentAdapter}. Its `fetch` routes
+ * tool-capable Pi-serviceable providers to the in-browser harness and every
+ * other model to the legacy `aiFetchStreamingResponse` pipeline (overridable
+ * via `options.aiFetch`).
  *
  * @param agent - the built-in `Agent` row this adapter represents
  * @param options - test/override seam for the legacy fetch engine
@@ -532,6 +572,9 @@ export const createBuiltInAdapter = (agent: Agent, options: BuiltInAdapterOption
       httpClient: context.httpClient,
       getProxyFetch: context.getProxyFetch,
       thinkingEnabled: context.thinkingEnabled,
+      turnBudget: context.turnBudget,
+      webToolBudget: context.webToolBudget,
+      telemetry: context.telemetry,
     })
 
   // Route tool-capable Pi-serviceable models (anthropic + the OpenAI-wire family)
@@ -539,18 +582,20 @@ export const createBuiltInAdapter = (agent: Agent, options: BuiltInAdapterOption
   // the harness can't honor since it always activates coding tools) stays on the
   // legacy pipeline. fetchViaHarness itself falls back when a candidate model
   // turns out to be unresolvable (unknown id / missing api key or url).
-  const isPiCandidate = (model: Model): boolean => piProviders.has(model.provider) && model.toolUsage !== 0
-  const fetch = (init: RequestInit, context: AgentAdapterContext): Promise<Response> =>
-    isPiCandidate(context.selectedModel)
-      ? fetchViaHarness(
-          init,
-          context,
-          harnessCache,
-          () => fetchViaLegacyPipeline(init, context),
-          loadAgentCore,
-          prepareConfig,
-        )
-      : fetchViaLegacyPipeline(init, context)
+  const fetch = (init: RequestInit, context: AgentAdapterContext): Promise<Response> => {
+    if (isPiModelCandidate(context.selectedModel)) {
+      return fetchViaHarness(
+        init,
+        context,
+        harnessCache,
+        () => fetchViaLegacyPipeline(init, context),
+        loadAgentCore,
+        prepareConfig,
+      )
+    }
+    context.telemetry?.setDimensions({ engine: 'legacy' })
+    return fetchViaLegacyPipeline(init, context)
+  }
 
   return {
     agent,

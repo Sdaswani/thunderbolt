@@ -14,17 +14,21 @@ import '@/testing-library'
 
 import { describe, expect, it, mock } from 'bun:test'
 import type { PreparedAiRequestConfig } from '@/ai/fetch'
+import { createTurnTelemetry } from '@/ai/turn-telemetry'
+import { createWebToolBudget, webToolCaps } from '@/ai/web-tool-budget'
 import type { Agent, AgentAdapterContext } from '@/types/acp'
 import type { Model } from '@/types'
 import {
   createBuiltInAdapter,
   harnessSignature,
+  isPiModelCandidate,
+  resolvePiModel,
   withThinkingSessionOverride,
   type BuiltInAdapterOptions,
   type ResolvedPiModel,
 } from './built-in-adapter'
 import type { BuildAppHarnessOptions, PiModelDescriptor } from '@shared/agent-core'
-import { APP_HARNESS_ENVIRONMENT_PROMPT } from '@shared/agent-core/environment-prompt'
+import { appHarnessEnvironmentPrompt } from '@shared/agent-core/environment-prompt'
 import type { AgentHarness, AgentTool } from '@earendil-works/pi-agent-core'
 
 const noopFetch = (async () => new Response('')) as PiModelDescriptor['fetch']
@@ -45,9 +49,22 @@ const openaiCompat = (
     apiKey: 'sk-o',
     fetch: noopFetch,
     reasoning: false,
+    supportsImages: false,
     ...overrides,
   },
   thinkingLevel: 'medium',
+})
+
+describe('isPiModelCandidate', () => {
+  it('matches the production provider and tool-usage routing boundary', () => {
+    expect(
+      ['anthropic', 'openai', 'custom', 'openrouter', 'thunderbolt'].map((provider) =>
+        isPiModelCandidate({ provider: provider as Model['provider'], toolUsage: 1 }),
+      ),
+    ).toEqual([true, true, true, true, true])
+    expect(isPiModelCandidate({ provider: 'tinfoil', toolUsage: 1 })).toBe(false)
+    expect(isPiModelCandidate({ provider: 'anthropic', toolUsage: 0 })).toBe(false)
+  })
 })
 
 describe('harnessSignature', () => {
@@ -102,6 +119,76 @@ describe('harnessSignature', () => {
   it('does not embed the plaintext api key', () => {
     expect(harnessSignature(anthropic({ apiKey: 'super-secret-key' }), 'sys')).not.toContain('super-secret-key')
   })
+
+  it('changes when the openai-compat image capability changes', () => {
+    expect(harnessSignature(openaiCompat(), 'sys')).not.toBe(
+      harnessSignature(openaiCompat({ supportsImages: true }), 'sys'),
+    )
+  })
+})
+
+describe('resolvePiModel — image capability (vendor-gated)', () => {
+  const contextFor = (model: Model): AgentAdapterContext =>
+    ({ selectedModel: model, getProxyFetch: () => noopFetch }) as unknown as AgentAdapterContext
+  const agentCore = {} as Parameters<typeof resolvePiModel>[0]
+  const openaiModel = (vendor: string | null): Model =>
+    ({ id: 'm', name: 'M', provider: 'openai', model: 'gpt-4o', apiKey: 'sk-o', vendor, toolUsage: 1 }) as Model
+
+  it('advertises image support for a vision-vendor model', () => {
+    const resolved = resolvePiModel(agentCore, contextFor(openaiModel('openai')), null)
+    expect(resolved?.descriptor).toMatchObject({ kind: 'openai-compat', supportsImages: true })
+  })
+
+  it('does not advertise image support when the vendor is unknown (custom/local)', () => {
+    const resolved = resolvePiModel(agentCore, contextFor(openaiModel(null)), null)
+    expect(resolved?.descriptor).toMatchObject({ kind: 'openai-compat', supportsImages: false })
+  })
+})
+
+describe('createBuiltInAdapter engine telemetry', () => {
+  it('records legacy when a Pi candidate falls back after model resolution', async () => {
+    const model = {
+      id: 'model-1',
+      name: 'Unknown Claude',
+      model: 'claude-unknown',
+      provider: 'anthropic',
+      apiKey: 'sk-a',
+      toolUsage: 1,
+    } as Model
+    const config = {
+      model,
+      profile: null,
+      supportsTools: true,
+      sourceCollector: [],
+      toolset: {},
+      skills: [],
+      mcpToolsMetadata: undefined,
+      stableSystemPrompt: 'stable',
+      volatileSystemPrompt: 'volatile',
+    } satisfies PreparedAiRequestConfig
+    const aiFetch = mock(async () => new Response('legacy'))
+    const adapter = createBuiltInAdapter({ id: 'built-in', type: 'built-in' } as Agent, {
+      aiFetch,
+      loadAgentCore: async () => ({ isKnownAnthropicModel: () => false }) as never,
+      prepareConfig: async () => config,
+    })
+    const telemetry = createTurnTelemetry({ generateId: () => 'trace-1' })
+    const context = {
+      threadId: 'thread-1',
+      selectedModel: model,
+      mcpClients: [],
+      reconnectClient: async () => null,
+      httpClient: {},
+      getProxyFetch: () => noopFetch,
+      onAcpSessionId: async () => {},
+      telemetry,
+    } as unknown as AgentAdapterContext
+
+    await adapter.fetch({ body: '{}' }, context)
+
+    expect(aiFetch).toHaveBeenCalledTimes(1)
+    expect(telemetry.getEngine()).toBe('legacy')
+  })
 })
 
 describe('withThinkingSessionOverride', () => {
@@ -117,15 +204,18 @@ describe('withThinkingSessionOverride', () => {
       ...anthropic(),
       thinkingLevel: 'off',
     })
-    expect(withThinkingSessionOverride(openaiCompat({ reasoning: true }), { startWithReasoning: 1 }, false)).toEqual({
-      descriptor: { ...openaiCompat({ reasoning: true }).descriptor, reasoning: false },
-      thinkingLevel: 'off',
-    })
+    const openaiBase = openaiCompat({ reasoning: true })
+    const overridden = withThinkingSessionOverride(openaiBase, { startWithReasoning: 1 }, false)
+    expect(overridden.thinkingLevel).toBe('off')
+    expect(overridden.descriptor.kind).toBe('openai-compat')
+    if (overridden.descriptor.kind === 'openai-compat' && openaiBase.descriptor.kind === 'openai-compat') {
+      expect(overridden.descriptor).toEqual({ ...openaiBase.descriptor, reasoning: false })
+    }
   })
 })
 
 describe('createBuiltInAdapter persistent harness', () => {
-  it('refreshes prompt/tools per send and rebuilds only for regenerate revision', async () => {
+  it('refreshes prompt/tools, rebuilds for regeneration, and applies the Pi web-budget floor', async () => {
     const model = {
       id: 'model-1',
       name: 'Claude',
@@ -157,7 +247,6 @@ describe('createBuiltInAdapter persistent harness', () => {
         mcpToolsMetadata: undefined,
         stableSystemPrompt: 'stable prompt',
         volatileSystemPrompt: `timestamp ${index + 1}`,
-        systemPrompt: `stable prompt\n\ntimestamp ${index + 1}`,
       }),
     )
     const prepareConfig = mock(async () => configs.shift()!)
@@ -165,6 +254,7 @@ describe('createBuiltInAdapter persistent harness', () => {
     const seededSystemPrompts: string[] = []
     const setToolsCalls: Array<Array<{ tools: AgentTool[]; activeToolNames: string[] | undefined }>> = []
     const promptCalls: Array<{ text: string; images: unknown[] }> = []
+    const activeToolCalls: string[][] = []
     const toPiCalls: PreparedAiRequestConfig['toolset'][] = []
     const harnesses: AgentHarness[] = []
     const buildHarness = async (options: BuildAppHarnessOptions): Promise<AgentHarness> => {
@@ -174,15 +264,31 @@ describe('createBuiltInAdapter persistent harness', () => {
         typeof systemPrompt === 'function' ? await systemPrompt({} as never) : (systemPrompt ?? ''),
       )
       const setToolsForHarness: Array<{ tools: AgentTool[]; activeToolNames: string[] | undefined }> = []
+      let toolResultHandler: (() => Promise<unknown> | unknown) | undefined
       setToolsCalls.push(setToolsForHarness)
       const harness = {
         getTools: () => [{ name: 'read' } as AgentTool],
         setTools: async (tools: AgentTool[], activeToolNames?: string[]) =>
           void setToolsForHarness.push({ tools, activeToolNames }),
-        prompt: async (text: string, promptOptions?: { images?: unknown[] }) =>
-          void promptCalls.push({ text, images: promptOptions?.images ?? [] }),
+        setActiveTools: async (toolNames: string[]) => void activeToolCalls.push(toolNames),
+        prompt: async (text: string, promptOptions?: { images?: unknown[] }) => {
+          promptCalls.push({ text, images: promptOptions?.images ?? [] })
+          if (promptCalls.length === 1) {
+            for (let call = 0; call <= webToolCaps.auto; call++) {
+              await context.webToolBudget?.execute('search', { query: `query ${call}` }, async () => ({ call }))
+            }
+            await toolResultHandler?.()
+          }
+        },
         waitForIdle: async () => {},
-        on: () => () => {},
+        on: (type: string, handler: () => Promise<unknown> | unknown) => {
+          if (type === 'tool_result') {
+            toolResultHandler = handler
+          }
+          return () => {
+            toolResultHandler = undefined
+          }
+        },
         abort: async () => ({ aborted: true }),
         env: { remove: async () => {} },
       } as unknown as AgentHarness
@@ -208,6 +314,7 @@ describe('createBuiltInAdapter persistent harness', () => {
       loadAgentCore: async () => agentCore,
       prepareConfig: prepareConfig as NonNullable<BuiltInAdapterOptions['prepareConfig']>,
     })
+    const telemetry = createTurnTelemetry({ generateId: () => 'trace-pi' })
     const context = {
       threadId: 'thread-1',
       selectedModel: model,
@@ -217,6 +324,8 @@ describe('createBuiltInAdapter persistent harness', () => {
       getProxyFetch: () => noopFetch,
       onAcpSessionId: async () => {},
       regenerationRevision: 0,
+      webToolBudget: createWebToolBudget('auto'),
+      telemetry,
     } as unknown as AgentAdapterContext
     const request = (messages: unknown[]): RequestInit => ({ body: JSON.stringify({ messages }) })
     const send = async (init: RequestInit): Promise<void> => {
@@ -225,6 +334,7 @@ describe('createBuiltInAdapter persistent harness', () => {
     }
 
     await send(request([{ role: 'user', parts: [{ type: 'text', text: '/review' }] }]))
+    context.webToolBudget = createWebToolBudget('auto')
     await send(
       request([
         { role: 'user', parts: [{ type: 'text', text: '/review' }] },
@@ -258,10 +368,12 @@ describe('createBuiltInAdapter persistent harness', () => {
     const firstSystemPrompt = buildCalls[0]?.systemPrompt as () => string
     const secondSystemPrompt = buildCalls[1]?.systemPrompt as () => string
     const expectedPrompt = (timestamp: string): string =>
-      `stable prompt\n\n${APP_HARNESS_ENVIRONMENT_PROMPT}\n\n${timestamp}`
+      `stable prompt\n\n${appHarnessEnvironmentPrompt}\n\n${timestamp}`
     expect(seededSystemPrompts).toEqual([expectedPrompt('timestamp 1'), expectedPrompt('timestamp 3')])
     expect(firstSystemPrompt()).toBe(expectedPrompt('timestamp 2'))
     expect(secondSystemPrompt()).toBe(expectedPrompt('timestamp 3'))
     expect(harnesses).toHaveLength(2)
+    expect(activeToolCalls).toEqual([[]])
+    expect(telemetry.getEngine()).toBe('pi')
   })
 })
